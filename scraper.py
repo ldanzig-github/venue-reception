@@ -118,7 +118,31 @@ def _scrape_one(page, target):
     except Exception as e:
         logger.warning(f"goto failed for {target['key']}: {e}")
         return None
-    page.wait_for_timeout(7000)
+    # Wait for the data we care about to actually render. Google Maps
+    # redirects /maps/search → /maps/place asynchronously and the review
+    # count appears late; Tripadvisor lazy-loads the rating block. With
+    # only a fixed wait, fast venues scrape OK and slow ones return None.
+    page.wait_for_timeout(3000)
+    if target["type"] == "google":
+        try:
+            page.wait_for_function(
+                "() => /\\d\\.\\d\\s*\\([\\d,]+\\)/.test(document.body.innerText)",
+                timeout=18000,
+            )
+        except Exception:
+            logger.warning(f"{target['key']}: rating+count pattern never appeared, scraping what's there")
+        page.wait_for_timeout(2000)
+    else:
+        # Tripadvisor: wait for "All reviews (N)" or "X.X of 5".
+        try:
+            page.wait_for_function(
+                "() => /All reviews\\s*\\(\\d/.test(document.body.innerText) || /\\d\\.\\d\\s*of\\s*5/.test(document.body.innerText)",
+                timeout=18000,
+            )
+        except Exception:
+            logger.warning(f"{target['key']}: TA rating block never appeared (likely anti-bot block on VPS IP)")
+        page.wait_for_timeout(2000)
+
     try:
         raw = page.evaluate(GOOGLE_JS if target["type"] == "google" else TRIP_JS)
     except Exception as e:
