@@ -17,20 +17,57 @@ logger = logging.getLogger(__name__)
 
 
 # ─── target venues ───────────────────────────────────────────────────────
+# Direct /maps/place/ URLs (with coords from our verified manual scrapes)
+# avoid the flaky search→place redirect headless Chromium does inconsistently.
 VENUE_TARGETS = [
     {"key": "poolhouse",      "type": "google",
-     "url": "https://www.google.com/maps/search/Poolhouse+100+Liverpool+Street+London+EC2"},
+     "url": "https://www.google.com/maps/place/Poolhouse/@51.5177849,-0.0831704,17z"},
     {"key": "poolhouse_trip", "type": "tripadvisor",
      "url": "https://www.tripadvisor.com/Attraction_Review-g186338-d34271730-Reviews-Poolhouse-London_England.html"},
     {"key": "philly",         "type": "google",
-     "url": "https://www.google.com/maps/search/Ballers+1325+N+Beach+Street+Philadelphia"},
+     "url": "https://www.google.com/maps/place/Ballers/@39.967446,-75.126293,17z"},
     {"key": "boston",         "type": "google",
-     "url": "https://www.google.com/maps/search/Ballers+25+Pier+4+Boulevard+Boston+Seaport"},
+     "url": "https://www.google.com/maps/place/Ballers+Boston+Seaport/@42.3495067,-71.0456173,17z"},
     {"key": "dubai",          "type": "google",
-     "url": "https://www.google.com/maps/search/Five+Iron+Golf+Westin+Mina+Seyahi+Dubai"},
+     "url": "https://www.google.com/maps/place/Five+Iron+Golf/@25.0930341,55.1487567,17z"},
     {"key": "dubai_trip",     "type": "tripadvisor",
      "url": "https://www.tripadvisor.com/Attraction_Review-g295424-d33368076-Reviews-Five_Iron_Golf-Dubai_Emirate_of_Dubai.html"},
 ]
+
+
+# ─── fallback values for Tripadvisor pages ─────────────────────────────
+# Tripadvisor blocks data-center IPs aggressively. When the live scrape
+# fails, the dashboard falls back to these values (verified manually
+# May 1, 2026 via a residential browser). Update whenever you have a
+# successful manual scrape.
+TRIP_FALLBACKS = {
+    "poolhouse_trip": {
+        "rating": "5.0", "count": "4", "ranking": "#290 of 1,007",
+        "reviews": [
+            {"name": "Ian S",    "date": "Apr 17, 2026", "title": "Fun evening with friends",
+             "body": "Lively, impressive, spacious venue. Pool table tech and games are superb."},
+            {"name": "Paul K",   "date": "Apr 9, 2026",  "title": "Pool house the next pool generation in",
+             "body": "What an awesome experience! Interactive pool that creates a level playing field for all players. This will become big."},
+            {"name": "Daniel M", "date": "Apr 9, 2026",  "title": "Great night out!",
+             "body": "Great place, great service, great food and drinks. And the pool games are a lot of fun. Special thanks to Ethan for helping to explain how it all worked!"},
+            {"name": "Michael P","date": "Apr 9, 2026",  "title": "Awesome Experience",
+             "body": "An absolutely awesome concept beautifully executed with great food and super friendly staff."},
+        ],
+    },
+    "dubai_trip": {
+        "rating": "5.0", "count": "377", "ranking": "#1 of 474",
+        "reviews": [
+            {"name": "Wanderer65209268966", "date": "Apr 2026", "title": "Minigolf, Amazing review",
+             "body": "Mini golf was amazing, Emma and JC were super helpful! 10/10 would recommend."},
+            {"name": "Divya K",              "date": "Apr 2026", "title": "Miniature Golf",
+             "body": "Tried the 9 hole miniature golf and had a blast! Emma was an absolute pleasure and helped us out with everything."},
+            {"name": "Naveen n",             "date": "Apr 2026", "title": "Great Time Well Spent",
+             "body": "I had a great time and really enjoyed every moment. It was refreshing."},
+            {"name": "Dreamer25511642592",   "date": "Apr 2026", "title": "Good",
+             "body": "Emma hospitality is very good"},
+        ],
+    },
+}
 
 
 GOOGLE_JS = r"""
@@ -172,6 +209,10 @@ def scrape_all_venues(headless: bool = True) -> dict:
         page = context.new_page()
         for target in VENUE_TARGETS:
             data = _scrape_one(page, target)
+            # Apply Tripadvisor fallbacks when live scrape returned nothing.
+            if (not data or not data.get("rating")) and target["key"] in TRIP_FALLBACKS:
+                logger.info(f"{target['key']}: using TA fallback values")
+                data = TRIP_FALLBACKS[target["key"]]
             raw[target["key"]] = data or {}
             if data:
                 logger.info(
