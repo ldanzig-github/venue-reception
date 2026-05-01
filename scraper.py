@@ -77,7 +77,15 @@ TRIP_FALLBACKS = {
 GOOGLE_JS = r"""
 () => {
   const txt = document.body.innerText || "";
+
+  // Primary: visible "<rating> (<count>)" text in the venue panel header.
   const m = txt.match(/(\d\.\d)\s*\(([\d,]+)\)/);
+  let rating = m ? m[1] : null;
+  let count = m ? m[2] : null;
+  // Track which extraction path each field came from — surfaced in logs.
+  const source = { rating: rating ? "text" : null, count: count ? "text" : null };
+
+  // Distribution from the per-star aria-labels (e.g. "5 stars, 82 reviews").
   const stars = [];
   document.querySelectorAll('[role="img"][aria-label*="reviews"]').forEach(
     (el) => stars.push(el.getAttribute("aria-label") || "")
@@ -87,6 +95,26 @@ GOOGLE_JS = r"""
     const mm = s.match(/(\d)\s*stars?,\s*([\d,]+)\s*reviews?/);
     if (mm) dist[mm[1]] = parseInt(mm[2].replace(/,/g, ""));
   });
+
+  // Fallback A: derive count from the distribution sum when the visible
+  // "(N)" text never rendered (happens for some venue panels in headless).
+  if (!count) {
+    const total = Object.values(dist).reduce((a, b) => a + b, 0);
+    if (total > 0) { count = String(total); source.count = "dist-sum"; }
+  }
+
+  // Fallback B: pull rating from "X.X stars" aria-label if the visible
+  // "<rating> (<count>)" text never matched.
+  if (!rating) {
+    const ratingEl = Array.from(document.querySelectorAll('[role="img"][aria-label]')).find(
+      (el) => /^\s*\d\.\d\s*stars?\s*$/.test(el.getAttribute("aria-label") || "")
+    );
+    if (ratingEl) {
+      const rm = (ratingEl.getAttribute("aria-label") || "").match(/(\d\.\d)/);
+      if (rm) { rating = rm[1]; source.rating = "aria-label"; }
+    }
+  }
+
   const reviewNodes = document.querySelectorAll("div[data-review-id]");
   const seen = new Set();
   const reviews = [];
@@ -100,15 +128,12 @@ GOOGLE_JS = r"""
     const ratingEl = node.querySelector('[role="img"][aria-label*="star"]');
     const rl = ratingEl ? ratingEl.getAttribute("aria-label") || "" : "";
     const rm = rl.match(/(\d)/);
-    const rating = rm ? parseInt(rm[1]) : null;
+    const r = rm ? parseInt(rm[1]) : null;
     const body = ((node.querySelector(".MyEned, .wiI7pd")?.innerText) || "")
       .replace(/…\s*More$/, "").trim();
-    if (name && body) reviews.push({ name, date, rating, body: body.slice(0, 260) });
+    if (name && body) reviews.push({ name, date, rating: r, body: body.slice(0, 260) });
   });
-  return JSON.stringify({
-    rating: m ? m[1] : null, count: m ? m[2] : null,
-    distribution: dist, reviews,
-  });
+  return JSON.stringify({ rating, count, distribution: dist, reviews, _source: source });
 }
 """
 
@@ -164,22 +189,27 @@ def _scrape_one(page, target):
     # count appears late; Tripadvisor lazy-loads the rating block. With
     # only a fixed wait, fast venues scrape OK and slow ones return None.
     page.wait_for_timeout(3000)
-    count_re = "() => /\\d\\.\\d\\s*\\([\\d,]+\\)/.test(document.body.innerText)"
+    # Two ways the venue data appears: visible "<rating> (<count>)" text, OR
+    # the per-star aria-labels (e.g. "5 stars, 82 reviews"). Either is
+    # enough to populate the dashboard. Wait for whichever shows up first.
+    ready_re = (
+        "() => /\\d\\.\\d\\s*\\([\\d,]+\\)/.test(document.body.innerText) "
+        "|| document.querySelectorAll('[role=\"img\"][aria-label*=\"reviews\"]').length >= 3"
+    )
     if target["type"] == "google":
         try:
-            page.wait_for_function(count_re, timeout=12000)
+            page.wait_for_function(ready_re, timeout=15000)
         except Exception:
-            # Search→place redirect didn't happen on its own. Click the
-            # first search result to force navigation into the venue panel.
+            # Maybe we're on a search results page that didn't auto-redirect.
             try:
                 first_result = page.query_selector('a.hfpxzc')
                 if first_result:
                     logger.info(f"{target['key']}: clicking first search result to open venue panel")
                     first_result.click()
                     page.wait_for_timeout(3000)
-                    page.wait_for_function(count_re, timeout=12000)
+                    page.wait_for_function(ready_re, timeout=12000)
                 else:
-                    logger.warning(f"{target['key']}: no search result link found; scraping what's there")
+                    logger.warning(f"{target['key']}: venue data didn't render; scraping what's there")
             except Exception as e:
                 logger.warning(f"{target['key']}: click-to-place failed ({e}); scraping what's there")
         page.wait_for_timeout(2000)
@@ -229,9 +259,11 @@ def scrape_all_venues(headless: bool = True) -> dict:
                 data = TRIP_FALLBACKS[target["key"]]
             raw[target["key"]] = data or {}
             if data:
+                src = data.get("_source") or {}
+                src_str = f" [rating:{src.get('rating','—')} count:{src.get('count','—')}]" if src else ""
                 logger.info(
                     f"{target['key']}: rating={data.get('rating')} "
-                    f"count={data.get('count')}"
+                    f"count={data.get('count')}{src_str}"
                 )
             else:
                 logger.warning(f"{target['key']}: no data")
