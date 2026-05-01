@@ -20,6 +20,9 @@ try:
 except ImportError:
     _apply_stealth = None
 
+# Places API is the preferred Google source when GOOGLE_PLACES_API_KEY is set.
+import places_api
+
 logger = logging.getLogger(__name__)
 
 
@@ -33,18 +36,22 @@ logger = logging.getLogger(__name__)
 VENUE_TARGETS = [
     {"key": "poolhouse",      "type": "google",
      "url": "https://www.google.com/maps/search/Poolhouse+100+Liverpool+Street+London+EC2",
-     "search_q": "Poolhouse 100 Liverpool Street London"},
+     "search_q":     "Poolhouse 100 Liverpool Street London",
+     "places_query": "Poolhouse 100 Liverpool Street London EC2M"},
     {"key": "poolhouse_trip", "type": "tripadvisor",
      "url": "https://www.tripadvisor.com/Attraction_Review-g186338-d34271730-Reviews-Poolhouse-London_England.html"},
     {"key": "philly",         "type": "google",
      "url": "https://www.google.com/maps/search/Ballers+1325+N+Beach+Street+Philadelphia",
-     "search_q": "Ballers Fishtown Philadelphia"},
+     "search_q":     "Ballers Fishtown Philadelphia",
+     "places_query": "Ballers 1325 N Beach St Philadelphia"},
     {"key": "boston",         "type": "google",
      "url": "https://www.google.com/maps/search/Ballers+25+Pier+4+Boulevard+Boston+Seaport",
-     "search_q": "Ballers Boston Seaport"},
+     "search_q":     "Ballers Boston Seaport",
+     "places_query": "Ballers 25 Pier 4 Blvd Boston Seaport"},
     {"key": "dubai",          "type": "google",
      "url": "https://www.google.com/maps/search/Five+Iron+Golf+Westin+Mina+Seyahi+Dubai",
-     "search_q": "Five Iron Golf Dubai Marina"},
+     "search_q":     "Five Iron Golf Dubai Marina",
+     "places_query": "Five Iron Golf Westin Mina Seyahi Dubai Marina"},
     {"key": "dubai_trip",     "type": "tripadvisor",
      "url": "https://www.tripadvisor.com/Attraction_Review-g295424-d33368076-Reviews-Five_Iron_Golf-Dubai_Emirate_of_Dubai.html"},
 ]
@@ -367,8 +374,31 @@ def scrape_all_venues(headless: bool = True) -> dict:
                 logger.info("playwright-stealth patches applied")
             except Exception as e:
                 logger.warning(f"stealth apply failed: {e}")
+
+        places_enabled = places_api.is_enabled()
+        if places_enabled:
+            logger.info("Google Places API key detected — using API as primary for Google data")
+
         for target in VENUE_TARGETS:
-            data = _scrape_one(page, target)
+            data = None
+
+            # ─── Google Places API path (when key is set) ───────────────
+            if (
+                places_enabled
+                and target["type"] == "google"
+                and target.get("places_query")
+            ):
+                api_data = places_api.fetch_google_data(target["places_query"])
+                if api_data and api_data.get("rating"):
+                    data = api_data
+                    logger.info(
+                        f"{target['key']}: rating={data.get('rating')} "
+                        f"count={data.get('count')} [via Places API]"
+                    )
+
+            # ─── Headless scrape path (fallback or non-Google) ──────────
+            if not data:
+                data = _scrape_one(page, target)
             # Apply Tripadvisor fallbacks when live scrape returned nothing.
             if (not data or not data.get("rating")) and target["key"] in TRIP_FALLBACKS:
                 logger.info(f"{target['key']}: using TA fallback values")
