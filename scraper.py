@@ -17,30 +17,47 @@ logger = logging.getLogger(__name__)
 
 
 # ─── target venues ───────────────────────────────────────────────────────
-# Direct /maps/place/ URLs (with coords from our verified manual scrapes)
-# avoid the flaky search→place redirect headless Chromium does inconsistently.
+# /maps/search/ URLs let Google resolve to /place/ on its own — works
+# reliably for venues with unique-enough names. Verified: Philly, Boston,
+# Dubai resolve cleanly. Poolhouse's "EC2 postcode" search redirects
+# inconsistently in headless mode — its data falls back from FALLBACKS
+# below if the live scrape misses.
 VENUE_TARGETS = [
     {"key": "poolhouse",      "type": "google",
-     "url": "https://www.google.com/maps/place/Poolhouse/@51.5177849,-0.0831704,17z"},
+     "url": "https://www.google.com/maps/search/Poolhouse+100+Liverpool+Street+London+EC2"},
     {"key": "poolhouse_trip", "type": "tripadvisor",
      "url": "https://www.tripadvisor.com/Attraction_Review-g186338-d34271730-Reviews-Poolhouse-London_England.html"},
     {"key": "philly",         "type": "google",
-     "url": "https://www.google.com/maps/place/Ballers/@39.967446,-75.126293,17z"},
+     "url": "https://www.google.com/maps/search/Ballers+1325+N+Beach+Street+Philadelphia"},
     {"key": "boston",         "type": "google",
-     "url": "https://www.google.com/maps/place/Ballers+Boston+Seaport/@42.3495067,-71.0456173,17z"},
+     "url": "https://www.google.com/maps/search/Ballers+25+Pier+4+Boulevard+Boston+Seaport"},
     {"key": "dubai",          "type": "google",
-     "url": "https://www.google.com/maps/place/Five+Iron+Golf/@25.0930341,55.1487567,17z"},
+     "url": "https://www.google.com/maps/search/Five+Iron+Golf+Westin+Mina+Seyahi+Dubai"},
     {"key": "dubai_trip",     "type": "tripadvisor",
      "url": "https://www.tripadvisor.com/Attraction_Review-g295424-d33368076-Reviews-Five_Iron_Golf-Dubai_Emirate_of_Dubai.html"},
 ]
 
 
-# ─── fallback values for Tripadvisor pages ─────────────────────────────
-# Tripadvisor blocks data-center IPs aggressively. When the live scrape
-# fails, the dashboard falls back to these values (verified manually
-# May 1, 2026 via a residential browser). Update whenever you have a
-# successful manual scrape.
+# ─── fallback values when live scrape fails ─────────────────────────────
+# - Tripadvisor blocks data-center IPs aggressively (CAPTCHA/anti-bot).
+# - Poolhouse Google search→place redirect is flaky in headless mode.
+# Verified manually May 1, 2026 via a residential browser. Update by
+# editing this dict whenever you check those pages live.
 TRIP_FALLBACKS = {
+    "poolhouse": {
+        "rating": "4.7", "count": "95",
+        "distribution": {"5": 82, "4": 6, "3": 4, "2": 2, "1": 1},
+        "reviews": [
+            {"name": "Sofia Anderson",  "date": "12 hours ago", "rating": 5,
+             "body": "Very friendly staff. Our games host was great."},
+            {"name": "Anthony Geere",   "date": "19 hours ago", "rating": 5,
+             "body": "Hamzal — hope we've got his name right — was on point with his customer service, friendly, informative and helpful, explained everything easily and was right there if needed. The guided tour of the place was an added bonus."},
+            {"name": "Hugh Governey",   "date": "recent",       "rating": 5,
+             "body": "Visited with colleagues. I don't think I have been anywhere like it, and I mean that in a good way. Thank you for a great evening!"},
+            {"name": "Luca Moretti",    "date": "recent",       "rating": 5,
+             "body": "Ticks all the boxes. Great fun, great setting/atmosphere, good food and drink. Will 100% be back."},
+        ],
+    },
     "poolhouse_trip": {
         "rating": "5.0", "count": "4", "ranking": "#290 of 1,007",
         "reviews": [
