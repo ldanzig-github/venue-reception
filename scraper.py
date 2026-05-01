@@ -17,22 +17,27 @@ logger = logging.getLogger(__name__)
 
 
 # ─── target venues ───────────────────────────────────────────────────────
-# /maps/search/ URLs let Google resolve to /place/ on its own — works
-# reliably for venues with unique-enough names. Verified: Philly, Boston,
-# Dubai resolve cleanly. Poolhouse's "EC2 postcode" search redirects
-# inconsistently in headless mode — its data falls back from FALLBACKS
-# below if the live scrape misses.
+# Two-stage Google strategy applied uniformly to every google entry:
+#   1. /maps/search/ — usually returns full venue panel (rating + count + reviews)
+#   2. /search?q=...  — fallback if Maps serves the "limited view" headless
+#      mode sometimes gets, which strips the count and breakdown
+# `search_q` is the query string used for the /search?q= fallback. Adding
+# a new venue: just add a row with `key`, `type:"google"`, `url`, `search_q`.
 VENUE_TARGETS = [
     {"key": "poolhouse",      "type": "google",
-     "url": "https://www.google.com/maps/search/Poolhouse+100+Liverpool+Street+London+EC2"},
+     "url": "https://www.google.com/maps/search/Poolhouse+100+Liverpool+Street+London+EC2",
+     "search_q": "Poolhouse 100 Liverpool Street London"},
     {"key": "poolhouse_trip", "type": "tripadvisor",
      "url": "https://www.tripadvisor.com/Attraction_Review-g186338-d34271730-Reviews-Poolhouse-London_England.html"},
     {"key": "philly",         "type": "google",
-     "url": "https://www.google.com/maps/search/Ballers+1325+N+Beach+Street+Philadelphia"},
+     "url": "https://www.google.com/maps/search/Ballers+1325+N+Beach+Street+Philadelphia",
+     "search_q": "Ballers Fishtown Philadelphia"},
     {"key": "boston",         "type": "google",
-     "url": "https://www.google.com/maps/search/Ballers+25+Pier+4+Boulevard+Boston+Seaport"},
+     "url": "https://www.google.com/maps/search/Ballers+25+Pier+4+Boulevard+Boston+Seaport",
+     "search_q": "Ballers Boston Seaport"},
     {"key": "dubai",          "type": "google",
-     "url": "https://www.google.com/maps/search/Five+Iron+Golf+Westin+Mina+Seyahi+Dubai"},
+     "url": "https://www.google.com/maps/search/Five+Iron+Golf+Westin+Mina+Seyahi+Dubai",
+     "search_q": "Five Iron Golf Dubai Marina"},
     {"key": "dubai_trip",     "type": "tripadvisor",
      "url": "https://www.tripadvisor.com/Attraction_Review-g295424-d33368076-Reviews-Five_Iron_Golf-Dubai_Emirate_of_Dubai.html"},
 ]
@@ -178,6 +183,27 @@ TRIP_JS = r"""
 """
 
 
+# Extracts rating + count from Google Search's right-side knowledge panel.
+# Used as a fallback when the Maps page serves a stripped "limited view".
+SEARCH_KP_JS = r"""
+() => {
+  const txt = document.body.innerText || "";
+  // Common knowledge-panel patterns:
+  //   "4.7 ★★★★★ (95)"
+  //   "4.7 (95) Google reviews"
+  //   "4.7 stars · 95 Google reviews"
+  let m = txt.match(/(\d\.\d)\s*[★*]+\s*\(([\d,]+)\)/);
+  if (!m) m = txt.match(/(\d\.\d)\s*\(([\d,]+)\)\s*Google\s*reviews?/i);
+  if (!m) m = txt.match(/(\d\.\d)\s*(?:stars?)?\s*[·,]?\s*([\d,]+)\s*Google\s*reviews?/i);
+  if (!m) m = txt.match(/(\d\.\d)\s+\(([\d,]+)\)/);  // last-resort generic
+  return JSON.stringify({
+    rating: m ? m[1] : null,
+    count: m ? m[2] : null,
+  });
+}
+"""
+
+
 def _scrape_one(page, target):
     try:
         page.goto(target["url"], timeout=30000, wait_until="domcontentloaded")
@@ -266,10 +292,51 @@ def _scrape_one(page, target):
         logger.warning(f"evaluate failed for {target['key']}: {e}")
         return None
     try:
-        return json.loads(raw) if raw else None
+        data = json.loads(raw) if raw else None
     except json.JSONDecodeError as e:
         logger.warning(f"bad JSON from {target['key']}: {e}")
         return None
+
+    # If Maps gave us only the rating (limited-view headless detection),
+    # fall back to Google Search's knowledge panel for the count.
+    if (
+        target["type"] == "google"
+        and target.get("search_q")
+        and data
+        and not data.get("count")
+    ):
+        try:
+            from urllib.parse import quote_plus
+            search_url = f"https://www.google.com/search?q={quote_plus(target['search_q'])}"
+            logger.info(f"{target['key']}: Maps gave limited view, trying Search knowledge panel")
+            page.goto(search_url, timeout=30000, wait_until="domcontentloaded")
+            page.wait_for_timeout(4000)
+            # Reject consent walls quickly if encountered
+            try:
+                btn = page.query_selector('button:has-text("Reject all"), button:has-text("I agree")')
+                if btn:
+                    btn.click()
+                    page.wait_for_timeout(2000)
+            except Exception:
+                pass
+            search_raw = page.evaluate(SEARCH_KP_JS)
+            search_data = json.loads(search_raw) if search_raw else None
+            if search_data and search_data.get("count"):
+                data["count"] = search_data["count"]
+                if not data.get("rating"):
+                    data["rating"] = search_data.get("rating")
+                src = data.get("_source") or {}
+                src["count"] = "search-kp"
+                if not src.get("rating"):
+                    src["rating"] = "search-kp"
+                data["_source"] = src
+                logger.info(f"{target['key']}: Search KP filled count={search_data['count']}")
+            else:
+                logger.warning(f"{target['key']}: Search KP also missing count")
+        except Exception as e:
+            logger.warning(f"{target['key']}: Search KP fallback failed: {e}")
+
+    return data
 
 
 def scrape_all_venues(headless: bool = True) -> dict:
