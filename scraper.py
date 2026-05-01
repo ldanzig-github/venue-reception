@@ -212,7 +212,43 @@ def _scrape_one(page, target):
                     logger.warning(f"{target['key']}: venue data didn't render; scraping what's there")
             except Exception as e:
                 logger.warning(f"{target['key']}: click-to-place failed ({e}); scraping what's there")
-        page.wait_for_timeout(2000)
+
+        # Some venue panels (e.g. newer venues or short review lists) only
+        # lazy-load the per-star distribution after a scroll. Trigger a scroll
+        # within the side panel and wait briefly. Idempotent — no harm if the
+        # data is already there.
+        try:
+            page.evaluate(
+                "() => {"
+                "  const candidates = ["
+                "    document.querySelector('[role=\"main\"] [role=\"region\"]'),"
+                "    document.querySelector('div[role=\"main\"] > div'),"
+                "    document.querySelector('[role=\"feed\"]'),"
+                "    ...document.querySelectorAll('div[tabindex=\"-1\"]'),"
+                "  ];"
+                "  const panel = [...candidates].find(el => el && el.scrollHeight > el.clientHeight + 50);"
+                "  if (panel) panel.scrollBy(0, 1200);"
+                "}"
+            )
+            page.wait_for_timeout(2500)
+            # Optional second scroll for very long panels
+            page.evaluate(
+                "() => {"
+                "  const candidates = ["
+                "    document.querySelector('[role=\"main\"] [role=\"region\"]'),"
+                "    document.querySelector('div[role=\"main\"] > div'),"
+                "    document.querySelector('[role=\"feed\"]'),"
+                "    ...document.querySelectorAll('div[tabindex=\"-1\"]'),"
+                "  ];"
+                "  const panel = [...candidates].find(el => el && el.scrollHeight > el.clientHeight + 50);"
+                "  if (panel) panel.scrollBy(0, 1200);"
+                "}"
+            )
+            page.wait_for_timeout(1500)
+        except Exception as e:
+            logger.warning(f"{target['key']}: scroll-to-load failed: {e}")
+
+        page.wait_for_timeout(1000)
     else:
         # Tripadvisor: wait for "All reviews (N)" or "X.X of 5".
         try:
