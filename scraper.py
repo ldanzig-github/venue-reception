@@ -11,6 +11,9 @@ import logging
 from datetime import datetime
 from typing import Optional
 
+import re
+from datetime import datetime, timedelta, timezone
+
 from playwright.sync_api import sync_playwright
 
 # playwright-stealth is a soft dependency: if it's not installed, the
@@ -24,6 +27,46 @@ except ImportError:
 import places_api
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_review_date(rev: dict) -> datetime:
+    """
+    Best-effort timestamp for sorting reviews by recency. Returns datetime
+    in UTC. Falls back to a sentinel old date so missing/unparseable
+    timestamps sort to the bottom.
+    """
+    # Places API ISO 8601 publish_time is the gold standard.
+    pt = rev.get("publish_time") or ""
+    if pt:
+        try:
+            return datetime.fromisoformat(pt.replace("Z", "+00:00"))
+        except Exception:
+            pass
+
+    # Relative phrases: "12 hours ago", "a month ago", "3 weeks ago"
+    desc = (rev.get("date") or "").lower().strip()
+    m = re.match(r"(\d+|a|an)\s+(hour|day|week|month|year)s?\s+ago", desc)
+    if m:
+        n = 1 if m.group(1) in ("a", "an") else int(m.group(1))
+        unit = m.group(2)
+        delta = {
+            "hour": timedelta(hours=n),
+            "day": timedelta(days=n),
+            "week": timedelta(weeks=n),
+            "month": timedelta(days=30 * n),
+            "year": timedelta(days=365 * n),
+        }[unit]
+        return datetime.now(timezone.utc) - delta
+
+    # Tripadvisor-style "Apr 17, 2026" / "Apr 2026"
+    cleaned = re.sub(r"•.*$", "", desc).strip()
+    for fmt in ("%b %d, %Y", "%B %d, %Y", "%b %Y", "%B %Y"):
+        try:
+            return datetime.strptime(cleaned, fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+
+    return datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
 # ─── target venues ───────────────────────────────────────────────────────
@@ -431,25 +474,36 @@ def _build_dashboard_data(scrape: dict) -> dict:
         x = d.get("distribution", {}) or {}
         return [int(x.get(str(s), 0)) for s in (5, 4, 3, 2, 1)]
 
-    def merge(google_data, trip_data, max_n=4):
-        out = []
-        for r in (google_data or {}).get("reviews", [])[:max_n]:
-            out.append({
+    def merge(google_data, trip_data, ot_reviews=None, max_n=4):
+        """Combine reviews from all sources, sort by publish date (newest first), take top N."""
+        pool = []
+        for r in (google_data or {}).get("reviews", []) or []:
+            pool.append({
                 "source": "g",
                 "rating": r.get("rating", 5),
                 "body": r.get("body", ""),
                 "name": r.get("name", ""),
                 "when": _short_when(r.get("date", "")),
+                "_date_key": _parse_review_date(r),
                 "url": "https://www.google.com/maps/place/_",
             })
-        for r in (trip_data or {}).get("reviews", [])[:max_n]:
-            out.append({
+        for r in (trip_data or {}).get("reviews", []) or []:
+            pool.append({
                 "source": "t", "rating": 5,
                 "body": r.get("body", ""), "name": r.get("name", ""),
                 "when": (r.get("date") or "").split("•")[0].strip() or "Tripadvisor",
+                "_date_key": _parse_review_date(r),
                 "url": "https://www.tripadvisor.com/",
             })
-        return out[:max_n]
+        for r in (ot_reviews or []):
+            r2 = dict(r)
+            r2.setdefault("_date_key", _parse_review_date(r))
+            pool.append(r2)
+        # Sort newest first; entries with no parseable date sink to the bottom.
+        pool.sort(key=lambda x: x.get("_date_key") or datetime(1970, 1, 1, tzinfo=timezone.utc), reverse=True)
+        for r in pool:
+            r.pop("_date_key", None)
+        return pool[:max_n]
 
     return {
         "last_scrape": datetime.now().strftime("%b %-d, %Y · %-I:%M %p"),
@@ -465,19 +519,19 @@ def _build_dashboard_data(scrape: dict) -> dict:
                 "google": {"rating": philly_g.get("rating"), "count": philly_g.get("count")},
                 "opentable": {"rating": "4.5", "count": "30"},
                 "distribution": gdist(philly_g),
-                "reviews": merge(philly_g, None) + [
+                "reviews": merge(philly_g, None, ot_reviews=[
                     {"source": "o", "rating": 5, "body": "Great vibe, great service and hospitality, excellent food and drinks (cocktails and a long liquor list!).", "name": "OpenTable diner", "when": "recent", "url": "https://www.opentable.com/r/ballers-philadelphia"},
                     {"source": "o", "rating": 5, "body": "Best meatballs and drinks ever!", "name": "OpenTable diner", "when": "recent", "url": "https://www.opentable.com/r/ballers-philadelphia"},
-                ],
+                ]),
                 "insight": "Steady — 90%+ Google reviews are 5★. Padel + pickleball + smash burger keywords dominate.",
             },
             "boston": {
                 "google": {"rating": boston_g.get("rating"), "count": boston_g.get("count")},
                 "opentable": {"rating": "5.0", "count": "2"},
                 "distribution": gdist(boston_g),
-                "reviews": merge(boston_g, None) + [
+                "reviews": merge(boston_g, None, ot_reviews=[
                     {"source": "o", "rating": 5, "body": "Fun setting, great service, grilled cheese, tomato soup, s'mores hot chocolate.", "name": "OpenTable diner", "when": "recent", "url": "https://www.opentable.com/r/ballers-boston"},
-                ],
+                ]),
                 "insight": "Bimodal — current Google reviews are about the closed winter ice-rink pop-up, not the new outdoor product.",
             },
             "dubai": {

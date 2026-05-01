@@ -105,6 +105,7 @@ def _venue_block(meta, data):
     segs = "".join(f'<div class="seg s{5-i}" style="width:{pct[i]}%"></div>' for i in range(5))
     cap = "  ".join(f"{5-i}★·{dist[i]:,}" for i in range(5))
     cards = "\n      ".join(_review_card(r) for r in reviews)
+    trends_html = _trends_row(data.get("trends") or {})
 
     return f"""<article class="venue">
     <div class="v-info">
@@ -113,12 +114,61 @@ def _venue_block(meta, data):
       <div class="scores">{' '.join(pills)}</div>
       <div class="micro-dist" title="Google distribution: {' · '.join(str(d) for d in dist)}">{segs}</div>
       <div class="micro-cap">{cap}</div>
+      {trends_html}
       <div class="insight {insight_kind}">{insight}</div>
     </div>
     <div class="reviews">
       {cards}
     </div>
   </article>"""
+
+
+def _trends_row(trends: dict) -> str:
+    """Render small trend badges. trends shape: {'24h': {count_delta, rating_delta}, '7d': ..., '30d': ...}"""
+    if not trends:
+        return '<div class="trends placeholder">trend data: collecting…</div>'
+
+    badges = []
+    # Show count momentum and rating drift; pick the most informative window for each.
+    def _count_badge(label, delta):
+        if delta is None:
+            return None
+        sign = "+" if delta > 0 else ("" if delta == 0 else "−")
+        cls = "up" if delta > 0 else ("flat" if delta == 0 else "down")
+        n = abs(delta)
+        return f'<span class="tb {cls}"><b>{sign}{n}</b> reviews · {label}</span>'
+
+    def _rating_badge(label, delta):
+        if delta is None or delta == 0:
+            return None
+        sign = "+" if delta > 0 else "−"
+        cls = "up" if delta > 0 else "down"
+        return f'<span class="tb {cls}"><b>{sign}{abs(delta):.2f}★</b> · {label}</span>'
+
+    # Pick best windows: count change in 24h or 7d (whichever > 0); rating change in 7d or 30d.
+    for label in ("24h", "7d", "30d"):
+        d = trends.get(label) or {}
+        if "count_delta" in d and d["count_delta"] != 0:
+            b = _count_badge(label, d["count_delta"])
+            if b: badges.append(b)
+            break
+    else:
+        # No nonzero change found; show 7d count anyway if available
+        d = trends.get("7d") or trends.get("24h") or {}
+        if "count_delta" in d:
+            b = _count_badge("7d" if "7d" in trends else "24h", d.get("count_delta", 0))
+            if b: badges.append(b)
+
+    for label in ("7d", "30d", "24h"):
+        d = trends.get(label) or {}
+        if d.get("rating_delta") not in (None, 0):
+            b = _rating_badge(label, d["rating_delta"])
+            if b: badges.append(b)
+            break
+
+    if not badges:
+        return '<div class="trends placeholder">no trend movement yet</div>'
+    return f'<div class="trends">{"".join(badges)}</div>'
 
 
 def render(data: dict) -> str:
@@ -185,6 +235,13 @@ body { font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Inter", "
 .micro-dist .s5 { background: #22c55e; } .micro-dist .s4 { background: #84cc16; }
 .micro-dist .s3 { background: #eab308; } .micro-dist .s2 { background: #f97316; } .micro-dist .s1 { background: #ef4444; }
 .micro-cap { font-size: 9.5px; color: var(--ink-faint); margin-top: 2px; }
+.trends { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.trends .tb { font-size: 10px; padding: 2px 7px; border-radius: 999px; background: #f1f5f9; color: var(--ink-soft); border: 1px solid #e2e8f0; line-height: 1.3; }
+.trends .tb b { font-weight: 700; margin-right: 1px; }
+.trends .tb.up { background: #ecfdf5; border-color: #a7f3d0; color: #065f46; }
+.trends .tb.down { background: #fef2f2; border-color: #fecaca; color: #991b1b; }
+.trends .tb.flat { background: #f1f5f9; color: var(--ink-faint); }
+.trends.placeholder { font-size: 10px; color: var(--ink-faint); font-style: italic; }
 .reviews { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; min-width: 0; }
 @media (max-width: 720px) { .reviews { grid-template-columns: 1fr 1fr; } }
 .rev { border: 1px solid var(--line-soft); border-radius: 8px; padding: 8px 10px; background: #fcfcfd; display: flex; flex-direction: column; gap: 4px; min-width: 0; }

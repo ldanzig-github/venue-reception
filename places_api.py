@@ -137,15 +137,17 @@ def fetch_google_data(text_query: str) -> Optional[dict]:
     raw_reviews = details.get("reviews") or []
 
     reviews = []
-    for r in raw_reviews[:4]:
+    for r in raw_reviews[:8]:  # API can return up to 5; grab all + extras for sorting
         author = (r.get("authorAttribution") or {}).get("displayName", "")
         text = (r.get("text") or {}).get("text", "")
         rel_time = r.get("relativePublishTimeDescription", "")
+        publish_time = r.get("publishTime", "")  # ISO 8601 — used to sort by recency
         rev_rating = r.get("rating") or 5
         if author and text:
             reviews.append({
                 "name": author,
                 "date": rel_time,
+                "publish_time": publish_time,
                 "rating": int(rev_rating) if isinstance(rev_rating, (int, float)) else 5,
                 "body": text[:260],
             })

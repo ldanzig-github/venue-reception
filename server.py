@@ -39,10 +39,15 @@ def _do_scrape_cycle():
     try:
         from scraper import scrape_all_venues
         from renderer import write_dashboard
+        import trends
 
         log.info("starting scrape cycle")
         data = scrape_all_venues(headless=True)
+        # Compute trend deltas vs history BEFORE we append the current snapshot,
+        # so we don't compare against ourselves.
+        trends.enrich_with_trends(data)
         write_dashboard(data, html_path=HTML_PATH, json_path=JSON_PATH)
+        trends.append_history(data)
         log.info(f"wrote {HTML_PATH}")
     except Exception:
         log.exception("scrape cycle failed; previous file kept")
