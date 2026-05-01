@@ -1,0 +1,25 @@
+[Unit]
+Description=Venue Reception Dashboard (Flask + APScheduler + Playwright)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/venue-reception
+EnvironmentFile=/opt/venue-reception/.env
+ExecStart=/opt/venue-reception/venv/bin/gunicorn \
+    --bind 0.0.0.0:8090 \
+    --workers 1 \
+    --threads 4 \
+    --timeout 600 \
+    --access-logfile - \
+    --error-logfile - \
+    server:app
+Restart=on-failure
+RestartSec=10s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
