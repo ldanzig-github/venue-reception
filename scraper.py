@@ -38,26 +38,13 @@ VENUE_TARGETS = [
 ]
 
 
-# ─── fallback values when live scrape fails ─────────────────────────────
-# - Tripadvisor blocks data-center IPs aggressively (CAPTCHA/anti-bot).
-# - Poolhouse Google search→place redirect is flaky in headless mode.
-# Verified manually May 1, 2026 via a residential browser. Update by
-# editing this dict whenever you check those pages live.
+# ─── Tripadvisor fallback values ─────────────────────────────────────────
+# Tripadvisor blocks data-center IPs aggressively (CAPTCHA / anti-bot),
+# so live scrapes from a VPS are unreliable. Verified manually May 1, 2026
+# via a residential browser. Update by editing this dict whenever you
+# check those pages live. Google data is NEVER faked — if Google scrape
+# fails, the dashboard panel for that venue stays empty.
 TRIP_FALLBACKS = {
-    "poolhouse": {
-        "rating": "4.7", "count": "95",
-        "distribution": {"5": 82, "4": 6, "3": 4, "2": 2, "1": 1},
-        "reviews": [
-            {"name": "Sofia Anderson",  "date": "12 hours ago", "rating": 5,
-             "body": "Very friendly staff. Our games host was great."},
-            {"name": "Anthony Geere",   "date": "19 hours ago", "rating": 5,
-             "body": "Hamzal — hope we've got his name right — was on point with his customer service, friendly, informative and helpful, explained everything easily and was right there if needed. The guided tour of the place was an added bonus."},
-            {"name": "Hugh Governey",   "date": "recent",       "rating": 5,
-             "body": "Visited with colleagues. I don't think I have been anywhere like it, and I mean that in a good way. Thank you for a great evening!"},
-            {"name": "Luca Moretti",    "date": "recent",       "rating": 5,
-             "body": "Ticks all the boxes. Great fun, great setting/atmosphere, good food and drink. Will 100% be back."},
-        ],
-    },
     "poolhouse_trip": {
         "rating": "5.0", "count": "4", "ranking": "#290 of 1,007",
         "reviews": [
@@ -177,14 +164,24 @@ def _scrape_one(page, target):
     # count appears late; Tripadvisor lazy-loads the rating block. With
     # only a fixed wait, fast venues scrape OK and slow ones return None.
     page.wait_for_timeout(3000)
+    count_re = "() => /\\d\\.\\d\\s*\\([\\d,]+\\)/.test(document.body.innerText)"
     if target["type"] == "google":
         try:
-            page.wait_for_function(
-                "() => /\\d\\.\\d\\s*\\([\\d,]+\\)/.test(document.body.innerText)",
-                timeout=18000,
-            )
+            page.wait_for_function(count_re, timeout=12000)
         except Exception:
-            logger.warning(f"{target['key']}: rating+count pattern never appeared, scraping what's there")
+            # Search→place redirect didn't happen on its own. Click the
+            # first search result to force navigation into the venue panel.
+            try:
+                first_result = page.query_selector('a.hfpxzc')
+                if first_result:
+                    logger.info(f"{target['key']}: clicking first search result to open venue panel")
+                    first_result.click()
+                    page.wait_for_timeout(3000)
+                    page.wait_for_function(count_re, timeout=12000)
+                else:
+                    logger.warning(f"{target['key']}: no search result link found; scraping what's there")
+            except Exception as e:
+                logger.warning(f"{target['key']}: click-to-place failed ({e}); scraping what's there")
         page.wait_for_timeout(2000)
     else:
         # Tripadvisor: wait for "All reviews (N)" or "X.X of 5".
