@@ -13,6 +13,13 @@ from typing import Optional
 
 from playwright.sync_api import sync_playwright
 
+# playwright-stealth is a soft dependency: if it's not installed, the
+# scraper still runs but is more easily detected as headless by Google.
+try:
+    from playwright_stealth import stealth_sync as _apply_stealth  # type: ignore
+except ImportError:
+    _apply_stealth = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -354,6 +361,12 @@ def scrape_all_venues(headless: bool = True) -> dict:
             locale="en-US",
         )
         page = context.new_page()
+        if _apply_stealth:
+            try:
+                _apply_stealth(page)
+                logger.info("playwright-stealth patches applied")
+            except Exception as e:
+                logger.warning(f"stealth apply failed: {e}")
         for target in VENUE_TARGETS:
             data = _scrape_one(page, target)
             # Apply Tripadvisor fallbacks when live scrape returned nothing.
