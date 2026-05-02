@@ -145,31 +145,107 @@ def _compute_entity_trends(
     return out
 
 
+def _sparkline_series(history: list[dict], section: str, key: str, max_points: int = 30) -> list[dict]:
+    """Return the most recent N {ts, rating, count} points for an entity's sparkline."""
+    series = []
+    for entry in history:
+        e = (entry.get(section) or {}).get(key) or {}
+        if e.get("count") is None and e.get("rating") is None:
+            continue
+        series.append({
+            "ts": entry["_ts"].isoformat(),
+            "rating": _to_float(e.get("rating")),
+            "count": _to_int(e.get("count")),
+        })
+    return series[-max_points:]
+
+
 def enrich_with_trends(data: dict) -> dict:
     """
-    Mutate `data` in place: add a "trends" sub-dict to each venue and app.
-    For venues, the comparison is against the Google `rating`/`count`.
-    For apps, the comparison is against the `combined` (iOS+Android) block.
+    Mutate `data` in place: add a "trends" sub-dict + "sparkline" series
+    to each venue and app, and a "summary" block per section.
     """
     history = _read_history()
     venues = data.get("venues") or {}
     apps = data.get("apps") or {}
 
     for key, v in venues.items():
-        if not history:
-            v["trends"] = {}
-            continue
         google_block = v.get("google") or {}
-        v["trends"] = _compute_entity_trends("venues", key, google_block, history)
+        v["trends"] = _compute_entity_trends("venues", key, google_block, history) if history else {}
+        v["sparkline"] = _sparkline_series(history, "venues", key) if history else []
 
     for key, a in apps.items():
-        if not history:
-            a["trends"] = {}
-            continue
         combined = a.get("combined") or {}
-        a["trends"] = _compute_entity_trends("apps", key, combined, history)
+        a["trends"] = _compute_entity_trends("apps", key, combined, history) if history else {}
+        a["sparkline"] = _sparkline_series(history, "apps", key) if history else []
 
+    data["summary"] = {
+        "venues": _section_summary(venues, history, "venues", "google"),
+        "apps":   _section_summary(apps, history, "apps", "combined"),
+    }
     return data
+
+
+def _section_summary(entities: dict, history: list[dict], section: str, score_key: str) -> dict:
+    """Aggregate summary across all entities in a section."""
+    if not entities:
+        return {}
+
+    counts = []
+    ratings = []
+    for v in entities.values():
+        block = v.get(score_key) or v.get("google") or {}
+        c = _to_int(block.get("count"))
+        r = _to_float(block.get("rating"))
+        if c is not None: counts.append(c)
+        if r is not None: ratings.append(r)
+
+    total_count = sum(counts) if counts else 0
+    # Weighted average rating: weight each rating by its count.
+    avg_rating = None
+    if ratings and counts and len(ratings) == len(counts):
+        total_w = sum(counts)
+        if total_w > 0:
+            avg_rating = round(sum(r * c for r, c in zip(ratings, counts)) / total_w, 2)
+    elif ratings:
+        avg_rating = round(sum(ratings) / len(ratings), 2)
+
+    # Top mover: largest count delta vs ~24h ago (or earliest available).
+    top_mover_key = None
+    top_mover_delta = 0
+    weekly_growth = 0
+    now = datetime.now(timezone.utc)
+
+    if history:
+        # 24h or earliest reference snapshot
+        ref_24h = _find_snapshot_at_or_before(history, now - timedelta(hours=24))
+        if not ref_24h:
+            ref_24h = history[0]
+        ref_7d = _find_snapshot_at_or_before(history, now - timedelta(days=7)) or history[0]
+
+        for key, v in entities.items():
+            block = v.get(score_key) or v.get("google") or {}
+            cur = _to_int(block.get("count"))
+            if cur is None:
+                continue
+            prev_24h = _to_int((_section_block(ref_24h, section).get(key) or {}).get("count"))
+            if prev_24h is not None:
+                delta = cur - prev_24h
+                if abs(delta) > abs(top_mover_delta):
+                    top_mover_delta = delta
+                    top_mover_key = key
+            prev_7d = _to_int((_section_block(ref_7d, section).get(key) or {}).get("count"))
+            if prev_7d is not None:
+                weekly_growth += max(0, cur - prev_7d)
+
+    return {
+        "total_count": total_count,
+        "avg_rating": avg_rating,
+        "top_mover_key": top_mover_key,
+        "top_mover_delta": top_mover_delta,
+        "weekly_growth": weekly_growth,
+        "entity_count": len(entities),
+    }
 
 
 def append_history(data: dict) -> None:
