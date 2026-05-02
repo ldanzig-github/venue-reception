@@ -505,6 +505,19 @@ def _build_dashboard_data(scrape: dict) -> dict:
             r.pop("_date_key", None)
         return pool[:max_n]
 
+    # Build merged review lists once so analytics can use them too
+    poolhouse_reviews = merge(poolhouse_g, poolhouse_t)
+    philly_ot_reviews = [
+        {"source": "o", "rating": 5, "body": "Great vibe, great service and hospitality, excellent food and drinks (cocktails and a long liquor list!).", "name": "OpenTable diner", "when": "recent", "url": "https://www.opentable.com/r/ballers-philadelphia"},
+        {"source": "o", "rating": 5, "body": "Best meatballs and drinks ever!", "name": "OpenTable diner", "when": "recent", "url": "https://www.opentable.com/r/ballers-philadelphia"},
+    ]
+    philly_reviews = merge(philly_g, None, ot_reviews=philly_ot_reviews)
+    boston_ot_reviews = [
+        {"source": "o", "rating": 5, "body": "Fun setting, great service, grilled cheese, tomato soup, s'mores hot chocolate.", "name": "OpenTable diner", "when": "recent", "url": "https://www.opentable.com/r/ballers-boston"},
+    ]
+    boston_reviews = merge(boston_g, None, ot_reviews=boston_ot_reviews)
+    dubai_reviews = merge(dubai_g, dubai_t)
+
     return {
         "last_scrape": datetime.now().strftime("%b %-d, %Y · %-I:%M %p"),
         "venues": {
@@ -512,33 +525,32 @@ def _build_dashboard_data(scrape: dict) -> dict:
                 "google": {"rating": poolhouse_g.get("rating"), "count": poolhouse_g.get("count")},
                 "trip": {"rating": poolhouse_t.get("rating"), "count": poolhouse_t.get("count"), "rank": poolhouse_t.get("ranking")},
                 "distribution": gdist(poolhouse_g),
-                "reviews": merge(poolhouse_g, poolhouse_t),
+                "reviews": poolhouse_reviews,
+                "analytics": _venue_analytics(poolhouse_reviews),
                 "insight": f"{poolhouse_g.get('count','?')} Google reviews · TA {poolhouse_t.get('rating','?')}★ {poolhouse_t.get('ranking','')}",
             },
             "philly": {
                 "google": {"rating": philly_g.get("rating"), "count": philly_g.get("count")},
                 "opentable": {"rating": "4.5", "count": "30"},
                 "distribution": gdist(philly_g),
-                "reviews": merge(philly_g, None, ot_reviews=[
-                    {"source": "o", "rating": 5, "body": "Great vibe, great service and hospitality, excellent food and drinks (cocktails and a long liquor list!).", "name": "OpenTable diner", "when": "recent", "url": "https://www.opentable.com/r/ballers-philadelphia"},
-                    {"source": "o", "rating": 5, "body": "Best meatballs and drinks ever!", "name": "OpenTable diner", "when": "recent", "url": "https://www.opentable.com/r/ballers-philadelphia"},
-                ]),
+                "reviews": philly_reviews,
+                "analytics": _venue_analytics(philly_reviews),
                 "insight": "Steady — 90%+ Google reviews are 5★. Padel + pickleball + smash burger keywords dominate.",
             },
             "boston": {
                 "google": {"rating": boston_g.get("rating"), "count": boston_g.get("count")},
                 "opentable": {"rating": "5.0", "count": "2"},
                 "distribution": gdist(boston_g),
-                "reviews": merge(boston_g, None, ot_reviews=[
-                    {"source": "o", "rating": 5, "body": "Fun setting, great service, grilled cheese, tomato soup, s'mores hot chocolate.", "name": "OpenTable diner", "when": "recent", "url": "https://www.opentable.com/r/ballers-boston"},
-                ]),
+                "reviews": boston_reviews,
+                "analytics": _venue_analytics(boston_reviews),
                 "insight": "Bimodal — current Google reviews are about the closed winter ice-rink pop-up, not the new outdoor product.",
             },
             "dubai": {
                 "google": {"rating": dubai_g.get("rating"), "count": dubai_g.get("count")},
                 "trip": {"rating": dubai_t.get("rating"), "count": dubai_t.get("count"), "rank": dubai_t.get("ranking")},
                 "distribution": gdist(dubai_g),
-                "reviews": merge(dubai_g, dubai_t),
+                "reviews": dubai_reviews,
+                "analytics": _venue_analytics(dubai_reviews),
                 "insight": f"{dubai_t.get('ranking','?')} in Dubai · {dubai_g.get('count','?')} Google reviews",
             },
         },
@@ -550,3 +562,29 @@ def _short_when(s: str) -> str:
     if "NEW" in s.upper():
         s = s.split("NEW")[0].strip()
     return s[:18]
+
+
+def _venue_analytics(reviews_pool: list) -> dict:
+    """
+    Compute lightweight analytics for a venue from the merged reviews list.
+    `reviews_pool` is the post-merge list of dicts each with `rating` (int 1-5).
+    """
+    sample = len(reviews_pool)
+    if not sample:
+        return {"velocity_per_week": None, "positive_pct": None, "recent_distribution": {}, "sample_size": 0}
+
+    positive = sum(1 for r in reviews_pool if (r.get("rating") or 0) >= 4)
+    positive_pct = round(100 * positive / sample) if sample else None
+
+    recent_dist = {"5": 0, "4": 0, "3": 0, "2": 0, "1": 0}
+    for r in reviews_pool:
+        s = str(int(r.get("rating") or 0))
+        if s in recent_dist:
+            recent_dist[s] += 1
+
+    return {
+        "velocity_per_week": None,  # venues' merged-review pool is small (≤4); leave blank
+        "positive_pct": positive_pct,
+        "recent_distribution": recent_dist,
+        "sample_size": sample,
+    }

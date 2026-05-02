@@ -238,6 +238,7 @@ def _venue_block(meta, data):
     g = data.get("google") or {}
     t = data.get("trip") or {}
     o = data.get("opentable") or {}
+    analytics = data.get("analytics") or {}
     reviews = (data.get("reviews") or [])[:4]
     while len(reviews) < 4:
         reviews.append({"source": "g", "rating": 0, "body": "—", "name": "—", "when": "", "url": meta["google_url"]})
@@ -254,6 +255,7 @@ def _venue_block(meta, data):
         data.get("trends") or {}, data.get("sparkline") or [],
         int(primary_count) if primary_count not in (None, "—") and str(primary_count).isdigit() else None,
         float(primary_rating) if primary_rating not in (None, "—") else None,
+        positive_pct=analytics.get("positive_pct"),
     )
 
     pills = []
@@ -263,6 +265,29 @@ def _venue_block(meta, data):
         pills.append(_score_pill("t", "T", t, meta["trip_url"], extra=t.get("rank","")))
     if o.get("rating") and meta.get("ot_url"):
         pills.append(_score_pill("o", "OT", o, meta["ot_url"]))
+
+    # Distribution: prefer the lifetime breakdown if present, else fall back to recent-review distribution
+    dist_total = sum(int(dist_dict.get(str(s), 0)) for s in (5, 4, 3, 2, 1))
+    if dist_total == 0:
+        rd = analytics.get("recent_distribution") or {}
+        rd_total = sum(int(rd.get(str(s), 0)) for s in (5, 4, 3, 2, 1))
+        if rd_total > 0:
+            dist_dict = rd
+            dist_total = rd_total
+            dist_label = f"{rd_total} recent reviews"
+        else:
+            dist_label = "rating distribution unavailable"
+    else:
+        dist_label = f"{fmt_count(dist_total)} ratings"
+
+    # Analytics chips for venues — same vocab as apps
+    chips = []
+    pos = analytics.get("positive_pct")
+    if pos is not None and analytics.get("sample_size", 0) > 0:
+        cls = "good" if pos >= 80 else ("warn" if pos >= 60 else "bad")
+        chips.append(f'<span class="chip {cls}"><b>{pos}%</b> positive · last {analytics["sample_size"]}</span>')
+    if t.get("rank"):
+        chips.append(f'<span class="chip">{escape(str(t["rank"]))} on Tripadvisor</span>')
 
     cards_html = "\n      ".join(_review_card(r, default_url=meta["google_url"]) for r in reviews)
 
@@ -283,9 +308,10 @@ def _venue_block(meta, data):
         </div>
         <div class="scores-row">{' '.join(pills)}</div>
         {_trends_row(data.get("trends") or {})}
+        <div class="chips">{''.join(chips)}</div>
       </div>
       <div class="dist-col">
-        {_distribution_block(dist_dict, total_label=f"{fmt_count(sum(int(dist_dict.get(str(s),0)) for s in (5,4,3,2,1)))} ratings")}
+        {_distribution_block(dist_dict, total_label=dist_label) if dist_total > 0 else _empty_dist_block(dist_label)}
       </div>
       <div class="reviews-col">
         <div class="reviews-h">Most recent reviews</div>
@@ -295,6 +321,10 @@ def _venue_block(meta, data):
       </div>
     </div>
   </article>"""
+
+
+def _empty_dist_block(label: str) -> str:
+    return f'<div class="dist-block empty"><div class="empty-msg">{escape(label)}</div></div>'
 
 
 def _score_pill(cls, label, block, url, extra=""):
@@ -654,6 +684,8 @@ body {
   margin-top: 4px; font-size: 10px; color: var(--ink-faint);
   text-transform: uppercase; letter-spacing: 0.04em; font-weight: 600;
 }
+.dist-block.empty { padding: 8px 10px; background: var(--line-soft); border-radius: 6px; }
+.dist-block.empty .empty-msg { font-size: 10.5px; color: var(--ink-faint); font-style: italic; text-align: center; }
 
 /* ── trends + chips ── */
 .trends { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 9px; }
