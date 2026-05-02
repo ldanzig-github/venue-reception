@@ -102,8 +102,8 @@ def _fetch_ios(app_id: str) -> Optional[dict]:
         return None
 
 
-def _fetch_ios_reviews(app_id: str, n: int = 4) -> list[dict]:
-    """RSS feed — returns the most-recent N reviews."""
+def _fetch_ios_reviews(app_id: str, n: int = 50) -> list[dict]:
+    """RSS feed — returns up to N most-recent reviews (1 page = ~50)."""
     try:
         r = requests.get(
             f"https://itunes.apple.com/us/rss/customerreviews/page=1/id={app_id}/sortby=mostrecent/json",
@@ -139,6 +139,13 @@ def _fetch_android(package_name: str) -> Optional[dict]:
     try:
         from google_play_scraper import app as gps_app  # noqa: WPS433
         d = gps_app(package_name, lang="en", country="us")
+        # `histogram` is [count_1★, count_2★, count_3★, count_4★, count_5★]
+        hist = d.get("histogram") or []
+        # Normalize to {"5": n, "4": n, ...} dict for renderer's distribution code
+        dist = {}
+        if isinstance(hist, list) and len(hist) == 5:
+            for stars, count in zip([1, 2, 3, 4, 5], hist):
+                dist[str(stars)] = int(count or 0)
         return {
             "rating": d.get("score"),
             "count": d.get("ratings") or d.get("reviews"),
@@ -149,6 +156,7 @@ def _fetch_android(package_name: str) -> Optional[dict]:
             "developer": d.get("developer"),
             "price": "Free" if d.get("free") else (d.get("priceText") or ""),
             "installs": d.get("installs"),
+            "distribution": dist,  # {"5": n, "4": n, "3": n, "2": n, "1": n}
         }
     except Exception as e:
         logger.exception(f"google-play-scraper app failed for {package_name}: {e}")
@@ -225,6 +233,15 @@ def scrape_all_apps() -> dict:
         elif android_rating is not None:
             combined_rating = android_rating
 
+        # ── Analytics computed from the full merged review list ─────────
+        analytics = _compute_app_analytics(ios_reviews, android_reviews, ios_data, android_data)
+
+        # ── Distribution: prefer Android histogram (covers ALL reviews ever),
+        #    fall back to recent-review distribution sampled from RSS for iOS-only apps.
+        distribution = (android_data or {}).get("distribution") or {}
+        if not distribution:
+            distribution = analytics["recent_distribution"]
+
         out_apps[app["key"]] = {
             "ios": ios_data or {},
             "android": android_data or {},
@@ -233,6 +250,8 @@ def scrape_all_apps() -> dict:
                 "rating": combined_rating,
                 "count": combined_count if combined_count else None,
             },
+            "distribution": distribution,
+            "analytics": analytics,
         }
 
         # Logging line per app for journalctl debugging
@@ -240,12 +259,82 @@ def scrape_all_apps() -> dict:
             f"app {app['key']}: "
             f"iOS={ios_rating}/{ios_count}  "
             f"Android={android_rating}/{android_count}  "
-            f"reviews={len(merged)}"
+            f"reviews={len(merged)}  "
+            f"velocity={analytics['velocity_per_week']}/wk  "
+            f"positive={analytics['positive_pct']}%"
         )
 
     return {
         "last_scrape": datetime.now().strftime("%b %-d, %Y · %-I:%M %p"),
         "apps": out_apps,
+    }
+
+
+def _compute_app_analytics(ios_reviews, android_reviews, ios_data, android_data) -> dict:
+    """
+    Compute richer review analytics from the full pulled review pool:
+      - velocity_per_week   : reviews per week, derived from the most recent N reviews' span
+      - positive_pct        : % of recent reviews rated 4+
+      - recent_distribution : {"5": n, ...} computed from recent reviews (used when
+                              no store-side histogram is available, i.e. iOS-only apps)
+      - version_breakdown   : recent rating per current/previous version
+      - cross_store_gap     : iOS rating - Android rating (or None)
+      - sample_size         : how many reviews the analytics were computed over
+    """
+    all_reviews = list(ios_reviews) + list(android_reviews)
+    sample = len(all_reviews)
+
+    # Velocity: how many reviews span how much wall-clock time?
+    dated = []
+    for r in all_reviews:
+        d = _parse_date(r.get("publish_time", ""))
+        if d:
+            dated.append((d, r.get("rating") or 5, r.get("version") or ""))
+    velocity = None
+    if len(dated) >= 5:
+        dated.sort(key=lambda x: x[0])
+        span_days = (dated[-1][0] - dated[0][0]).total_seconds() / 86400
+        if span_days >= 1:
+            velocity = round(len(dated) / span_days * 7, 1)
+        else:
+            velocity = float(len(dated) * 7)
+
+    # Sentiment %
+    positive = sum(1 for r in all_reviews if (r.get("rating") or 0) >= 4)
+    positive_pct = round(100 * positive / sample) if sample else None
+
+    # Recent distribution from the sampled reviews
+    recent_dist = {"5": 0, "4": 0, "3": 0, "2": 0, "1": 0}
+    for r in all_reviews:
+        s = str(int(r.get("rating") or 0))
+        if s in recent_dist:
+            recent_dist[s] += 1
+
+    # Per-version breakdown — only for the current iOS or Android version.
+    cur_version = (ios_data or {}).get("version") or (android_data or {}).get("version") or ""
+    version_breakdown = None
+    if cur_version:
+        v_reviews = [r for r in all_reviews if (r.get("version") or "") == cur_version]
+        if v_reviews:
+            v_avg = sum((r.get("rating") or 5) for r in v_reviews) / len(v_reviews)
+            version_breakdown = {
+                "version": cur_version,
+                "rating": round(v_avg, 2),
+                "count": len(v_reviews),
+            }
+
+    # Cross-store gap
+    ios_r = (ios_data or {}).get("rating")
+    and_r = (android_data or {}).get("rating")
+    cross_store_gap = round(ios_r - and_r, 2) if (ios_r is not None and and_r is not None) else None
+
+    return {
+        "velocity_per_week": velocity,
+        "positive_pct": positive_pct,
+        "recent_distribution": recent_dist,
+        "version_breakdown": version_breakdown,
+        "cross_store_gap": cross_store_gap,
+        "sample_size": sample,
     }
 
 
