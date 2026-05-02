@@ -76,9 +76,14 @@ def _find_snapshot_at_or_before(history: list[dict], target_time: datetime) -> O
     return best
 
 
+def _section_block(entry: dict, section: str) -> dict:
+    """Pull the per-entity {rating, count} block out of a history entry, by section."""
+    return entry.get(section) or {}
+
+
+# Backwards-compat alias used by older callers
 def _venues_block(entry: dict) -> dict:
-    """Pull the per-venue {rating, count} block out of a history entry."""
-    return entry.get("venues") or {}
+    return _section_block(entry, "venues")
 
 
 def _delta(prev: dict, cur_count, cur_rating) -> dict:
@@ -100,14 +105,16 @@ def _format_elapsed(td: timedelta) -> str:
     return f"{secs // 86400}d"
 
 
-def _compute_venue_trends(venue_key: str, current_g: dict, history: list[dict]) -> dict:
+def _compute_entity_trends(
+    section: str, key: str, current_block: dict, history: list[dict]
+) -> dict:
     """
-    Compute count + rating deltas. Tries standard windows (24h/7d/30d) first.
-    If no standard window has matching history yet, falls back to the
-    earliest available snapshot with a dynamic label like "since 45m".
+    Compute count + rating deltas for a single tracked entity (venue or app).
+    Tries standard windows (24h/7d/30d) first; falls back to "since X" using
+    the earliest available snapshot when the standard windows are empty.
     """
-    cur_count = _to_int(current_g.get("count"))
-    cur_rating = _to_float(current_g.get("rating"))
+    cur_count = _to_int(current_block.get("count"))
+    cur_rating = _to_float(current_block.get("rating"))
     if (cur_count is None and cur_rating is None) or not history:
         return {}
 
@@ -117,22 +124,21 @@ def _compute_venue_trends(venue_key: str, current_g: dict, history: list[dict]) 
 
     for label, delta in WINDOWS:
         target = now - delta
-        # Don't fabricate a window we don't have data for.
         if earliest["_ts"] > target:
             continue
         snap = _find_snapshot_at_or_before(history, target)
         if not snap:
             continue
-        entry = _delta(_venues_block(snap).get(venue_key) or {}, cur_count, cur_rating)
+        entry = _delta(_section_block(snap, section).get(key) or {}, cur_count, cur_rating)
         if entry:
             out[label] = entry
 
-    # Early-days fallback: if no standard window matched, show "since X"
-    # using the earliest snapshot we have.
     if not out:
         elapsed = now - earliest["_ts"]
         if elapsed.total_seconds() >= 60:
-            entry = _delta(_venues_block(earliest).get(venue_key) or {}, cur_count, cur_rating)
+            entry = _delta(
+                _section_block(earliest, section).get(key) or {}, cur_count, cur_rating
+            )
             if entry:
                 out[_format_elapsed(elapsed)] = entry
 
@@ -140,23 +146,36 @@ def _compute_venue_trends(venue_key: str, current_g: dict, history: list[dict]) 
 
 
 def enrich_with_trends(data: dict) -> dict:
-    """Mutate `data` in place: add a "trends" sub-dict to each venue."""
+    """
+    Mutate `data` in place: add a "trends" sub-dict to each venue and app.
+    For venues, the comparison is against the Google `rating`/`count`.
+    For apps, the comparison is against the `combined` (iOS+Android) block.
+    """
     history = _read_history()
-    if not history:
-        # First-ever run: no comparison possible. Still safe to call.
-        for v in (data.get("venues") or {}).values():
-            v["trends"] = {}
-        return data
     venues = data.get("venues") or {}
+    apps = data.get("apps") or {}
+
     for key, v in venues.items():
+        if not history:
+            v["trends"] = {}
+            continue
         google_block = v.get("google") or {}
-        v["trends"] = _compute_venue_trends(key, google_block, history)
+        v["trends"] = _compute_entity_trends("venues", key, google_block, history)
+
+    for key, a in apps.items():
+        if not history:
+            a["trends"] = {}
+            continue
+        combined = a.get("combined") or {}
+        a["trends"] = _compute_entity_trends("apps", key, combined, history)
+
     return data
 
 
 def append_history(data: dict) -> None:
-    """Append a compact snapshot to the history log."""
+    """Append a compact snapshot to the history log (covers venues + apps)."""
     venues = data.get("venues") or {}
+    apps = data.get("apps") or {}
     snapshot = {
         "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "venues": {
@@ -165,6 +184,13 @@ def append_history(data: dict) -> None:
                 "count":  _to_int((v.get("google") or {}).get("count")),
             }
             for key, v in venues.items()
+        },
+        "apps": {
+            key: {
+                "rating": _to_float((a.get("combined") or {}).get("rating")),
+                "count":  _to_int((a.get("combined") or {}).get("count")),
+            }
+            for key, a in apps.items()
         },
     }
     HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)

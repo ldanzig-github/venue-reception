@@ -187,11 +187,111 @@ def _trends_row(trends: dict) -> str:
 
 
 def render(data: dict) -> str:
+    # Local imports to avoid circular dep with app_store
+    from app_store import APPS as APP_META
     last_scrape = data.get("last_scrape") or datetime.now().strftime("%b %-d, %Y · %-I:%M %p")
     venues_html = "\n\n  ".join(
         _venue_block(meta, data["venues"].get(meta["key"], {})) for meta in VENUE_META
     )
-    return _TEMPLATE.replace("{{LAST_SCRAPE}}", escape(last_scrape)).replace("{{VENUES}}", venues_html)
+    apps_html = "\n\n  ".join(
+        _app_block(meta, (data.get("apps") or {}).get(meta["key"], {})) for meta in APP_META
+    )
+    return (
+        _TEMPLATE
+        .replace("{{LAST_SCRAPE}}", escape(last_scrape))
+        .replace("{{VENUES}}", venues_html)
+        .replace("{{APPS}}", apps_html)
+    )
+
+
+def _app_block(meta: dict, data: dict) -> str:
+    """Render a single app card (mirrors venue card structure for visual consistency)."""
+    ios = data.get("ios") or {}
+    android = data.get("android") or {}
+    combined = data.get("combined") or {}
+    reviews = (data.get("reviews") or [])[:4]
+    while len(reviews) < 4:
+        reviews.append({"source": "ios", "rating": 0, "body": "—", "name": "no review",
+                        "when": "", "url": meta.get("ios_url", "#")})
+    trends_html = _trends_row(data.get("trends") or {})
+
+    def fmt_count(n):
+        if n is None:
+            return ""
+        try:
+            n = int(n)
+        except (TypeError, ValueError):
+            return str(n)
+        if n >= 1_000_000:
+            return f"{n/1_000_000:.1f}M"
+        if n >= 1_000:
+            return f"{n/1_000:.1f}K"
+        return f"{n:,}"
+
+    pills = []
+    if ios.get("rating") is not None:
+        pills.append(
+            f'<span class="scoreP ios"><span class="src">iOS</span>'
+            f'<a href="{escape(meta.get("ios_url","#"))}" target="_blank">'
+            f'<span class="num">{ios["rating"]:.2f}<small>/5</small></span> '
+            f'({fmt_count(ios.get("count"))})</a></span>'
+        )
+    if android.get("rating") is not None and meta.get("android_url"):
+        pills.append(
+            f'<span class="scoreP android"><span class="src">AND</span>'
+            f'<a href="{escape(meta["android_url"])}" target="_blank">'
+            f'<span class="num">{android["rating"]:.2f}<small>/5</small></span> '
+            f'({fmt_count(android.get("count"))})</a></span>'
+        )
+
+    # Review cards reuse the venue card style; just adjust the source pill class.
+    cards_html = "\n      ".join(_app_review_card(r) for r in reviews)
+
+    # Tagline + version line
+    ios_v = ios.get("version", "")
+    and_v = android.get("version", "")
+    version_str = " · ".join(filter(None, [
+        f"iOS v{ios_v}" if ios_v else "",
+        f"Android v{and_v}" if and_v else "",
+    ]))
+    insight = f"{escape(meta.get('tagline',''))}" + (f" · {escape(version_str)}" if version_str else "")
+    insight_kind = meta.get("insight_kind", "good")
+
+    return f"""<article class="venue">
+    <div class="v-info">
+      <div class="name">{escape(meta['name'])}</div>
+      <div class="addr">{escape(meta.get('tagline',''))}{(' · ' + escape(version_str)) if version_str else ''}</div>
+      <div class="scores">{' '.join(pills)}</div>
+      {trends_html}
+      <div class="insight {insight_kind}">{escape(_app_insight(meta, ios, android, combined))}</div>
+    </div>
+    <div class="reviews">
+      {cards_html}
+    </div>
+  </article>"""
+
+
+def _app_review_card(rev):
+    src = rev.get("source", "ios")
+    label = {"ios": "iOS", "android": "AND"}.get(src, src.upper())
+    return f"""<div class="rev">
+        <div class="top"><span class="stars">{_stars(rev.get('rating',5))}</span><span class="src-pill {src}">{label}</span></div>
+        <div class="body">{escape((rev.get('title') + ' — ') if rev.get('title') else '')}{escape(rev.get('body',''))}</div>
+        <div class="who"><a href="{escape(rev.get('url','#'))}" target="_blank"><span class="name">{escape(rev.get('name',''))}</span></a><span class="when">{escape(rev.get('when') or rev.get('publish_time','')[:10])}</span></div>
+      </div>"""
+
+
+def _app_insight(meta, ios, android, combined):
+    parts = []
+    if combined.get("count"):
+        parts.append(f"{int(combined['count']):,} total ratings across stores")
+    elif ios.get("count"):
+        parts.append(f"{int(ios['count']):,} iOS ratings")
+    if android.get("installs"):
+        parts.append(f"{android['installs']} installs")
+    if not parts:
+        parts.append("Tracking app store performance")
+    return " · ".join(parts)
 
 
 def write_dashboard(data: dict, html_path: Path, json_path: Path | None = None):
@@ -238,6 +338,8 @@ body { font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Inter", "
 .scoreP.g .src { background: #e8f0fe; color: #1d4ed8; }
 .scoreP.t .src { background: #d8f3e8; color: #047857; }
 .scoreP.o .src { background: #fce8ea; color: #9b1c1c; }
+.scoreP.ios .src { background: #f1f5f9; color: #0f172a; }
+.scoreP.android .src { background: #ecfdf5; color: #047857; }
 .scoreP .num { font-weight: 700; font-size: 13px; }
 .scoreP .num small { color: var(--ink-soft); font-weight: 500; font-size: 10.5px; }
 .scoreP a { color: inherit; text-decoration: none; }
@@ -267,26 +369,56 @@ body { font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Inter", "
 .rev .src-pill.g { background: #e8f0fe; color: #1d4ed8; }
 .rev .src-pill.t { background: #d8f3e8; color: #047857; }
 .rev .src-pill.o { background: #fce8ea; color: #9b1c1c; }
+.rev .src-pill.ios { background: #f1f5f9; color: #0f172a; }
+.rev .src-pill.android { background: #ecfdf5; color: #047857; }
 .rev .body { font-size: 11.5px; line-height: 1.42; color: var(--ink); display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden; flex: 1; }
 .rev .who { font-size: 10px; color: var(--ink-soft); border-top: 1px dashed var(--line); padding-top: 4px; display: flex; justify-content: space-between; align-items: baseline; }
 .rev .who .name { font-weight: 600; color: var(--ink); }
 .rev .who .when { color: var(--ink-faint); }
 .rev .who a { color: inherit; text-decoration: none; }
 .foot { margin-top: 12px; font-size: 10.5px; color: var(--ink-faint); text-align: center; }
+.tabs { display: flex; gap: 4px; margin: 8px 0 14px; border-bottom: 1px solid var(--line); }
+.tabs .tab { background: none; border: none; padding: 7px 14px; font-size: 12px; font-weight: 600; color: var(--ink-faint); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; transition: color 0.15s, border-color 0.15s; }
+.tabs .tab:hover { color: var(--ink-soft); }
+.tabs .tab.active { color: var(--ink); border-bottom-color: var(--ink); }
+.tabs .tab .ct { background: var(--line-soft); color: var(--ink-soft); padding: 1px 6px; border-radius: 999px; font-size: 10px; margin-left: 5px; font-weight: 700; }
+.panel.hidden { display: none; }
 </style></head>
 <body><div class="wrap">
   <header class="header">
-    <div class="brand"><span class="title">Venue Reception</span><span class="live">Live</span></div>
+    <div class="brand"><span class="title">Reception Dashboard</span><span class="live">Live</span></div>
     <div class="meta-right">
       <div><strong>Scraped:</strong> {{LAST_SCRAPE}}</div>
       <div><strong>Reloaded:</strong> <span id="now"></span> · refresh in 5min</div>
     </div>
   </header>
 
-  {{VENUES}}
+  <nav class="tabs" role="tablist">
+    <button class="tab" data-tab="venues" role="tab">Venues<span class="ct">4</span></button>
+    <button class="tab" data-tab="apps"   role="tab">Apps<span class="ct">5</span></button>
+  </nav>
+
+  <section id="panel-venues" class="panel">
+    {{VENUES}}
+  </section>
+
+  <section id="panel-apps" class="panel">
+    {{APPS}}
+  </section>
 
   <div class="foot">Standalone deployment · auto-reload 5min · scrape every 30min</div>
 </div>
-<script>document.getElementById('now').textContent = new Date().toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });</script>
+<script>
+document.getElementById('now').textContent = new Date().toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+function setTab(name) {
+  if (!['venues','apps'].includes(name)) name = 'venues';
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  document.querySelectorAll('.panel').forEach(p => p.classList.toggle('hidden', p.id !== 'panel-' + name));
+  history.replaceState(null, '', '#' + name);
+}
+document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => setTab(t.dataset.tab)));
+window.addEventListener('hashchange', () => setTab(location.hash.slice(1)));
+setTab(location.hash.slice(1) || 'venues');
+</script>
 </body></html>
 """

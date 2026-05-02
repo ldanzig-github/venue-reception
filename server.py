@@ -38,11 +38,23 @@ def _do_scrape_cycle():
     """Called by APScheduler. Idempotent — overwrites the output file each run."""
     try:
         from scraper import scrape_all_venues
+        from app_store import scrape_all_apps
         from renderer import write_dashboard
         import trends
 
         log.info("starting scrape cycle")
-        data = scrape_all_venues(headless=True)
+        venue_data = scrape_all_venues(headless=True)
+        log.info("venue scrape complete; starting app store scrape")
+        app_data = scrape_all_apps()
+        log.info("app store scrape complete")
+
+        # Merge into a single dict before trend computation.
+        data = {
+            "last_scrape": venue_data.get("last_scrape") or app_data.get("last_scrape"),
+            "venues": venue_data.get("venues") or {},
+            "apps":   app_data.get("apps")   or {},
+        }
+
         # Compute trend deltas vs history BEFORE we append the current snapshot,
         # so we don't compare against ourselves.
         trends.enrich_with_trends(data)
