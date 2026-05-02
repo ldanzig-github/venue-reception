@@ -100,19 +100,27 @@ def _sparkline(series, kind="count", width=120, height=28):
     </svg>'''
 
 
-def _status_pill(trends, sparkline, count, current_rating):
-    """Categorize entity momentum: HOT, STEADY, SLIPPING, NEW."""
+def _status_pill(trends, sparkline, count, current_rating, positive_pct=None):
+    """
+    Categorize entity momentum.
+    Order of checks (most-informative first):
+      • NEW       — fewer than 20 lifetime reviews
+      • SLIPPING  — rating dropped ≥0.10 over any window  OR  recent positive% < 40
+      • WATCH     — recent positive% 40–64
+      • HOT       — count growing >2% / week
+      • GROWING   — count growing but slower
+      • STEADY    — no notable signal
+    """
     # New: small total count
     if count is not None and count < 20:
         return ('NEW', 'new', 'building review base')
 
-    # Look at 7d count growth as a fraction of total — anything growing >2%/wk is HOT
+    # Trend-based signals
     week_delta = None
     for label, d in (trends or {}).items():
         if 'd' in label and d.get('count_delta') is not None:
             week_delta = d['count_delta']
             break
-
     rating_drift = None
     for label in ('30d', '7d', '24h'):
         d = (trends or {}).get(label)
@@ -122,6 +130,15 @@ def _status_pill(trends, sparkline, count, current_rating):
 
     if rating_drift is not None and rating_drift <= -0.10:
         return ('SLIPPING', 'slipping', f'rating dropping {rating_drift:+.2f}')
+
+    # Sentiment-based signals (fill the gap before history accumulates)
+    if positive_pct is not None:
+        if positive_pct < 40:
+            return ('SLIPPING', 'slipping', f'recent reviews only {positive_pct}% positive')
+        if positive_pct < 65:
+            return ('WATCH', 'watch', f'recent reviews {positive_pct}% positive')
+
+    # Velocity-based signals
     if week_delta is not None and count and week_delta > 0 and week_delta / count > 0.02:
         return ('HOT', 'hot', f'+{week_delta} reviews/wk')
     if week_delta is not None and week_delta > 0:
@@ -317,6 +334,7 @@ def _app_block(meta, data):
         data.get("trends") or {}, data.get("sparkline") or [],
         int(primary_count) if primary_count else None,
         float(primary_rating) if primary_rating else None,
+        positive_pct=analytics.get("positive_pct"),
     )
 
     pills = []
@@ -570,6 +588,7 @@ body {
 .status.growing  { background: #ecfdf5; color: var(--good); }
 .status.steady   { background: #f1f5f9; color: var(--ink-soft); }
 .status.slipping { background: #fef2f2; color: var(--bad); }
+.status.watch    { background: #fef3c7; color: var(--warn); }
 .status.new      { background: #fef3c7; color: #92400e; }
 .card-sub { font-size: 11px; color: var(--ink-faint); margin-top: 2px; }
 
