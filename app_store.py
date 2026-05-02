@@ -255,7 +255,12 @@ def _parse_date(s: str) -> Optional[datetime]:
     s = s.strip()
     # ISO 8601 (Apple RSS uses this; google-play-scraper datetime exported as ISO)
     try:
-        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        # Force UTC if naive — Apple RSS gives tz-aware, Android library gives naive,
+        # and a mixed list is not sortable.
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
     except Exception:
         pass
     return None
