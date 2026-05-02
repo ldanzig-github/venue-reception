@@ -281,10 +281,17 @@ def _venue_block(meta, data):
 
 
 def _score_pill(cls, label, block, url, extra=""):
+    raw = block.get("rating")
+    if isinstance(raw, (int, float)):
+        rating_str = f"{raw:.1f}"
+    elif raw is None:
+        rating_str = "—"
+    else:
+        rating_str = str(raw)
     return (
         f'<a class="scoreP {cls}" href="{escape(url)}" target="_blank">'
         f'<span class="src">{label}</span>'
-        f'<span class="num">{block.get("rating","—")}<small>/5</small></span> '
+        f'<span class="num">{rating_str}<small>/5</small></span> '
         f'({fmt_count(block.get("count"))})'
         + (f' <span class="rank">{escape(str(extra))}</span>' if extra else '')
         + f'</a>'
@@ -344,7 +351,10 @@ def _app_block(meta, data):
 
     cards_html = "\n      ".join(_review_card(r, default_url=meta.get("ios_url","#")) for r in reviews)
 
-    rating_str = f"{primary_rating:.2f}" if isinstance(primary_rating, (int, float)) else (str(primary_rating) if primary_rating else "—")
+    if isinstance(primary_rating, (int, float)):
+        rating_str = f"{primary_rating:.1f}" if primary_rating == round(primary_rating, 1) else f"{primary_rating:.2f}"
+    else:
+        rating_str = str(primary_rating) if primary_rating else "—"
 
     return f"""<article class="card">
     <header class="card-h">
