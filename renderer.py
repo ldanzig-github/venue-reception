@@ -123,47 +123,62 @@ def _venue_block(meta, data):
   </article>"""
 
 
+_WINDOW_RE = __import__("re").compile(r"^(\d+)([mhd])$")
+_UNIT_SECONDS = {"m": 60, "h": 3600, "d": 86400}
+
+
+def _window_seconds(label: str) -> int:
+    """Sortable duration in seconds. '24h' -> 86400, '7d' -> 604800, '45m' -> 2700."""
+    m = _WINDOW_RE.match(label)
+    if not m:
+        return 0
+    return int(m.group(1)) * _UNIT_SECONDS[m.group(2)]
+
+
+def _badge_label(label: str) -> str:
+    """Standard windows show 'in 24h'; dynamic short windows show 'since 45m'."""
+    return f"in {label}" if label in ("24h", "7d", "30d") else f"since {label}"
+
+
 def _trends_row(trends: dict) -> str:
-    """Render small trend badges. trends shape: {'24h': {count_delta, rating_delta}, '7d': ..., '30d': ...}"""
+    """Render compact count + rating delta badges from whatever windows have data."""
     if not trends:
         return '<div class="trends placeholder">trend data: collecting…</div>'
 
-    badges = []
-    # Show count momentum and rating drift; pick the most informative window for each.
     def _count_badge(label, delta):
-        if delta is None:
-            return None
         sign = "+" if delta > 0 else ("" if delta == 0 else "−")
         cls = "up" if delta > 0 else ("flat" if delta == 0 else "down")
-        n = abs(delta)
-        return f'<span class="tb {cls}"><b>{sign}{n}</b> reviews · {label}</span>'
+        return f'<span class="tb {cls}"><b>{sign}{abs(delta)}</b> reviews · {_badge_label(label)}</span>'
 
     def _rating_badge(label, delta):
         if delta is None or delta == 0:
             return None
         sign = "+" if delta > 0 else "−"
         cls = "up" if delta > 0 else "down"
-        return f'<span class="tb {cls}"><b>{sign}{abs(delta):.2f}★</b> · {label}</span>'
+        return f'<span class="tb {cls}"><b>{sign}{abs(delta):.2f}★</b> · {_badge_label(label)}</span>'
 
-    # Pick best windows: count change in 24h or 7d (whichever > 0); rating change in 7d or 30d.
-    for label in ("24h", "7d", "30d"):
-        d = trends.get(label) or {}
-        if "count_delta" in d and d["count_delta"] != 0:
-            b = _count_badge(label, d["count_delta"])
-            if b: badges.append(b)
+    items = list(trends.items())
+    badges = []
+
+    # Count badge: prefer SHORTEST window with non-zero delta (recent momentum).
+    short_first = sorted(items, key=lambda kv: _window_seconds(kv[0]))
+    for label, d in short_first:
+        if d.get("count_delta") not in (None, 0):
+            badges.append(_count_badge(label, d["count_delta"]))
             break
     else:
-        # No nonzero change found; show 7d count anyway if available
-        d = trends.get("7d") or trends.get("24h") or {}
-        if "count_delta" in d:
-            b = _count_badge("7d" if "7d" in trends else "24h", d.get("count_delta", 0))
-            if b: badges.append(b)
+        # Nothing non-zero — still show shortest available (probably 0).
+        for label, d in short_first:
+            if "count_delta" in d:
+                badges.append(_count_badge(label, d["count_delta"]))
+                break
 
-    for label in ("7d", "30d", "24h"):
-        d = trends.get(label) or {}
-        if d.get("rating_delta") not in (None, 0):
-            b = _rating_badge(label, d["rating_delta"])
-            if b: badges.append(b)
+    # Rating badge: prefer LONGEST window with non-zero delta (long-term drift).
+    long_first = sorted(items, key=lambda kv: _window_seconds(kv[0]), reverse=True)
+    for label, d in long_first:
+        b = _rating_badge(label, d.get("rating_delta"))
+        if b:
+            badges.append(b)
             break
 
     if not badges:

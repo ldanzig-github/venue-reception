@@ -81,30 +81,61 @@ def _venues_block(entry: dict) -> dict:
     return entry.get("venues") or {}
 
 
+def _delta(prev: dict, cur_count, cur_rating) -> dict:
+    prev_count = _to_int(prev.get("count"))
+    prev_rating = _to_float(prev.get("rating"))
+    entry = {}
+    if cur_count is not None and prev_count is not None:
+        entry["count_delta"] = cur_count - prev_count
+    if cur_rating is not None and prev_rating is not None:
+        entry["rating_delta"] = round(cur_rating - prev_rating, 2)
+    return entry
+
+
+def _format_elapsed(td: timedelta) -> str:
+    secs = int(td.total_seconds())
+    if secs < 60:    return "just now"
+    if secs < 3600:  return f"{secs // 60}m"
+    if secs < 86400: return f"{secs // 3600}h"
+    return f"{secs // 86400}d"
+
+
 def _compute_venue_trends(venue_key: str, current_g: dict, history: list[dict]) -> dict:
-    """Compute count + rating deltas vs each historical window."""
+    """
+    Compute count + rating deltas. Tries standard windows (24h/7d/30d) first.
+    If no standard window has matching history yet, falls back to the
+    earliest available snapshot with a dynamic label like "since 45m".
+    """
     cur_count = _to_int(current_g.get("count"))
     cur_rating = _to_float(current_g.get("rating"))
-    if cur_count is None and cur_rating is None:
+    if (cur_count is None and cur_rating is None) or not history:
         return {}
 
     now = datetime.now(timezone.utc)
+    earliest = history[0]
     out = {}
+
     for label, delta in WINDOWS:
         target = now - delta
+        # Don't fabricate a window we don't have data for.
+        if earliest["_ts"] > target:
+            continue
         snap = _find_snapshot_at_or_before(history, target)
         if not snap:
             continue
-        prev = _venues_block(snap).get(venue_key) or {}
-        prev_count = _to_int(prev.get("count"))
-        prev_rating = _to_float(prev.get("rating"))
-        entry = {}
-        if cur_count is not None and prev_count is not None:
-            entry["count_delta"] = cur_count - prev_count
-        if cur_rating is not None and prev_rating is not None:
-            entry["rating_delta"] = round(cur_rating - prev_rating, 2)
+        entry = _delta(_venues_block(snap).get(venue_key) or {}, cur_count, cur_rating)
         if entry:
             out[label] = entry
+
+    # Early-days fallback: if no standard window matched, show "since X"
+    # using the earliest snapshot we have.
+    if not out:
+        elapsed = now - earliest["_ts"]
+        if elapsed.total_seconds() >= 60:
+            entry = _delta(_venues_block(earliest).get(venue_key) or {}, cur_count, cur_rating)
+            if entry:
+                out[_format_elapsed(elapsed)] = entry
+
     return out
 
 
