@@ -438,6 +438,22 @@ def scrape_all_venues(headless: bool = True) -> dict:
                         f"{target['key']}: rating={data.get('rating')} "
                         f"count={data.get('count')} [via Places API]"
                     )
+                    # Places API doesn't return per-star distribution AND its
+                    # 5 reviews are sorted by Google relevance, not strictly
+                    # recency. Run a best-effort headless scrape to grab BOTH
+                    # the lifetime distribution AND the truly newest reviews
+                    # (Google Maps' venue panel defaults to newest first).
+                    try:
+                        supplemental = _scrape_one(page, target)
+                        if supplemental:
+                            if supplemental.get("distribution"):
+                                data["distribution"] = supplemental["distribution"]
+                                logger.info(f"{target['key']}: lifetime distribution from headless aria-labels")
+                            if supplemental.get("reviews"):
+                                data["reviews"] = supplemental["reviews"]
+                                logger.info(f"{target['key']}: {len(supplemental['reviews'])} newest reviews from headless")
+                    except Exception as e:
+                        logger.warning(f"{target['key']}: supplemental headless scrape failed: {e}")
 
             # ─── Headless scrape path (fallback or non-Google) ──────────
             if not data:
