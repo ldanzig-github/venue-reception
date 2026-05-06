@@ -70,6 +70,16 @@ APPS = [
         "android_url": None,
         "insight_kind": "good",
     },
+    {
+        "key": "travel_sort",
+        "name": "Travel Sort",
+        "tagline": "Match puzzle game",
+        "ios_id": "6752299562",
+        "android_id": None,
+        "ios_url":     "https://apps.apple.com/us/app/travel-sort-match-puzzle/id6752299562",
+        "android_url": None,
+        "insight_kind": "good",
+    },
 ]
 
 

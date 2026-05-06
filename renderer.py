@@ -266,19 +266,25 @@ def _venue_block(meta, data):
     if o.get("rating") and meta.get("ot_url"):
         pills.append(_score_pill("o", "OT", o, meta["ot_url"]))
 
-    # Distribution: prefer the lifetime breakdown if present, else fall back to recent-review distribution
+    # Distribution must represent the LIFETIME breakdown (sum should match the
+    # total review count). If it doesn't, hide the panel — recent-sample
+    # distributions are misleading for venues with hundreds/thousands of reviews.
     dist_total = sum(int(dist_dict.get(str(s), 0)) for s in (5, 4, 3, 2, 1))
-    if dist_total == 0:
-        rd = analytics.get("recent_distribution") or {}
-        rd_total = sum(int(rd.get(str(s), 0)) for s in (5, 4, 3, 2, 1))
-        if rd_total > 0:
-            dist_dict = rd
-            dist_total = rd_total
-            dist_label = f"{rd_total} recent reviews"
-        else:
-            dist_label = "rating distribution unavailable"
-    else:
+    primary_count_int = None
+    try:
+        primary_count_int = int(str(primary_count).replace(",", "")) if primary_count not in (None, "—") else None
+    except (TypeError, ValueError):
+        primary_count_int = None
+    is_lifetime = (
+        dist_total > 0 and primary_count_int is not None and
+        # Allow tiny tolerance — sometimes lifetime distribution is a few off due to flagged reviews
+        abs(dist_total - primary_count_int) / max(primary_count_int, 1) < 0.10
+    )
+    if is_lifetime:
         dist_label = f"{fmt_count(dist_total)} ratings"
+    else:
+        dist_total = 0  # force empty render
+        dist_label = "lifetime distribution unavailable"
 
     # Analytics chips for venues — same vocab as apps
     chips = []
@@ -355,7 +361,18 @@ def _app_block(meta, data):
     while len(reviews) < 4:
         reviews.append({"source": "ios", "rating": 0, "body": "—", "name": "—", "when": "", "url": meta.get("ios_url","#")})
 
-    dist = data.get("distribution") or {}
+    # Distribution must represent the LIFETIME breakdown (Android histogram).
+    # iOS-only apps don't expose a lifetime histogram via any public endpoint;
+    # showing a 50-review sample as "distribution" misleads when lifetime is millions.
+    android_hist = (android.get("distribution") or {})
+    android_total = (android.get("count") or 0)
+    dist = {}
+    dist_label = "lifetime distribution unavailable"
+    if android_hist:
+        h_total = sum(int(android_hist.get(str(s), 0)) for s in (5, 4, 3, 2, 1))
+        if h_total > 0 and abs(h_total - android_total) / max(android_total, 1) < 0.10:
+            dist = android_hist
+            dist_label = f"{fmt_count(h_total)} Android ratings"
     sparkline_html = _sparkline(data.get("sparkline") or [], "count")
 
     primary_rating = combined.get("rating") or ios.get("rating") or android.get("rating")
@@ -424,7 +441,7 @@ def _app_block(meta, data):
         <div class="chips">{''.join(chips)}</div>
       </div>
       <div class="dist-col">
-        {_distribution_block(dist, total_label="rating distribution")}
+        {_distribution_block(dist, total_label=dist_label) if dist else _empty_dist_block(dist_label)}
       </div>
       <div class="reviews-col">
         <div class="reviews-h">Most recent reviews</div>
@@ -488,6 +505,8 @@ def render(data: dict) -> str:
         .replace("{{LAST_SCRAPE}}", escape(last_scrape))
         .replace("{{HERO_VENUES}}", _hero_strip(summary.get("venues"), "venue"))
         .replace("{{HERO_APPS}}",   _hero_strip(summary.get("apps"),   "app"))
+        .replace("{{VENUES_COUNT}}", str(len(VENUE_META)))
+        .replace("{{APPS_COUNT}}", str(len(APP_META)))
         .replace("{{VENUES}}", venues_html)
         .replace("{{APPS}}", apps_html))
 
@@ -774,8 +793,8 @@ body {
   </header>
 
   <nav class="tabs" role="tablist">
-    <button class="tab" data-tab="venues" role="tab">Venues<span class="ct">4</span></button>
-    <button class="tab" data-tab="apps"   role="tab">Apps<span class="ct">5</span></button>
+    <button class="tab" data-tab="venues" role="tab">Venues<span class="ct">{{VENUES_COUNT}}</span></button>
+    <button class="tab" data-tab="apps"   role="tab">Apps<span class="ct">{{APPS_COUNT}}</span></button>
   </nav>
 
   <section id="panel-venues" class="panel">
