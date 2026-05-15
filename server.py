@@ -127,11 +127,13 @@ def dashboard(token: str | None = None):
 # ─── scheduler ────────────────────────────────────────────────────────────
 def _start_scheduler():
     scheduler = BackgroundScheduler(timezone="UTC")
+    # First run fires `interval` minutes after add_job() — the immediate run
+    # is handled by the startup thread below, so we don't need next_run_time
+    # overrides. Passing next_run_time=None would *pause* the job entirely.
     scheduler.add_job(
         _do_scrape_cycle,
         trigger="interval",
         minutes=SCRAPE_INTERVAL_MIN,
-        next_run_time=None,  # don't fire immediately under gunicorn — see below
         id="venue-reception-scrape",
         max_instances=1,
         coalesce=True,
