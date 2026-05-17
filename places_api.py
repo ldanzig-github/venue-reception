@@ -157,6 +157,7 @@ def fetch_google_data(text_query: str) -> Optional[dict]:
         "count": str(count) if count is not None else None,
         "distribution": {},  # Places API doesn't return per-star breakdown
         "reviews": reviews,
+        "place_id": place_id,  # exact Maps target for the headless scrape
         "_source": {
             "rating": "places-api" if rating is not None else None,
             "count": "places-api" if count is not None else None,

@@ -444,7 +444,19 @@ def scrape_all_venues(headless: bool = True) -> dict:
                     # the lifetime distribution AND the truly newest reviews
                     # (Google Maps' venue panel defaults to newest first).
                     try:
-                        supplemental = _scrape_one(page, target)
+                        # Prefer the exact place_id Maps URL when the Places
+                        # API resolved one — generic "name + address" search
+                        # URLs render unreliably for venues with common names
+                        # (e.g. "Poolhouse"), which leaves the distribution
+                        # panel empty. The place_id lands on the venue panel.
+                        sup_target = target
+                        pid = api_data.get("place_id")
+                        if pid:
+                            sup_target = dict(target)
+                            sup_target["url"] = (
+                                f"https://www.google.com/maps/place/?q=place_id:{pid}"
+                            )
+                        supplemental = _scrape_one(page, sup_target)
                         if supplemental:
                             if supplemental.get("distribution"):
                                 data["distribution"] = supplemental["distribution"]
