@@ -265,6 +265,9 @@ def append_history(data: dict) -> None:
             key: {
                 "rating": _to_float((a.get("combined") or {}).get("rating")),
                 "count":  _to_int((a.get("combined") or {}).get("count")),
+                # Verified App Store chart rank — logged now so rank-delta
+                # arrows can be added later without a history gap.
+                "rank":   _to_int((a.get("rank") or {}).get("rank")),
             }
             for key, a in apps.items()
         },

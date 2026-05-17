@@ -405,6 +405,13 @@ def _app_block(meta, data):
     vb = analytics.get("version_breakdown")
     if vb and vb.get("count"):
         chips.append(f'<span class="chip">v{escape(vb["version"])}: <b>{vb["rating"]:.2f}★</b> · {vb["count"]} reviews</span>')
+    rank = data.get("rank")
+    if rank and rank.get("rank"):
+        chips.append(
+            f'<span class="chip">'
+            f'<b>#{rank["rank"]}</b> · {escape(str(rank["genre"]))} '
+            f'({escape(str(rank["chart"]))})</span>'
+        )
 
     ios_v = ios.get("version", "")
     and_v = android.get("version", "")

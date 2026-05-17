@@ -106,6 +106,9 @@ def _fetch_ios(app_id: str) -> Optional[dict]:
             "url": d.get("trackViewUrl"),
             "developer": d.get("artistName"),
             "price": d.get("formattedPrice"),
+            # Parallel arrays — used to resolve App Store chart rank below.
+            "genre_ids": d.get("genreIds") or [],
+            "genre_names": d.get("genres") or [],
         }
     except Exception as e:
         logger.exception(f"iTunes lookup failed for {app_id}: {e}")
@@ -142,6 +145,67 @@ def _fetch_ios_reviews(app_id: str, n: int = 50) -> list[dict]:
     except Exception as e:
         logger.warning(f"iTunes RSS failed for {app_id}: {e}")
         return []
+
+
+# ─── App Store chart rank ────────────────────────────────────────────────
+# Apple's Top Free RSS feed lists apps in rank order — an app's position in
+# the list IS its rank. Free, no auth, and directly verifiable: open the same
+# URL and count. Every tracked app is a free download, so Top Free is the one
+# chart that applies consistently across the portfolio.
+_RANK_CHART = "topfreeapplications"
+_RANK_CHART_LABEL = "Top Free"
+_RANK_LIMIT = 200
+
+
+def _fetch_chart(genre_id: str, cache: dict) -> list[str]:
+    """Ordered list of app IDs in a genre's Top Free chart. Cached per scrape cycle."""
+    if genre_id in cache:
+        return cache[genre_id]
+    ids: list[str] = []
+    try:
+        r = requests.get(
+            f"https://itunes.apple.com/us/rss/{_RANK_CHART}"
+            f"/limit={_RANK_LIMIT}/genre={genre_id}/json",
+            timeout=15,
+        )
+        r.raise_for_status()
+        entries = (r.json().get("feed") or {}).get("entry") or []
+        ids = [
+            ((e.get("id") or {}).get("attributes") or {}).get("im:id")
+            for e in entries
+        ]
+        ids = [i for i in ids if i]
+    except Exception as e:
+        logger.warning(f"chart fetch failed for genre {genre_id}: {e}")
+    cache[genre_id] = ids
+    return ids
+
+
+def _fetch_chart_rank(
+    app_id: str, genre_ids: list, genre_names: list, cache: dict
+) -> Optional[dict]:
+    """
+    Best (lowest) verified rank for an app across every App Store genre it
+    belongs to. Returns {"rank", "genre", "genre_id", "chart"} or None when
+    the app is outside the top 200 of all its genres — we never show a rank
+    that can't be confirmed against Apple's published chart.
+    """
+    if not app_id or not genre_ids:
+        return None
+    id_to_name = dict(zip(genre_ids, genre_names or []))
+    best = None
+    for gid in genre_ids:
+        ids = _fetch_chart(str(gid), cache)
+        if app_id in ids:
+            rank = ids.index(app_id) + 1
+            if best is None or rank < best["rank"]:
+                best = {
+                    "rank": rank,
+                    "genre": id_to_name.get(gid) or f"genre {gid}",
+                    "genre_id": str(gid),
+                    "chart": _RANK_CHART_LABEL,
+                }
+    return best
 
 
 # ─── Google Play (via google-play-scraper) ───────────────────────────────
@@ -206,11 +270,24 @@ def scrape_all_apps() -> dict:
                                                   reviews: [...], _source: {...} } } }
     """
     out_apps = {}
+    chart_cache: dict = {}  # genre_id -> ordered app-id list, shared across this cycle
     for app in APPS:
         ios_data = _fetch_ios(app["ios_id"]) if app.get("ios_id") else None
         android_data = _fetch_android(app["android_id"]) if app.get("android_id") else None
         ios_reviews = _fetch_ios_reviews(app["ios_id"]) if ios_data else []
         android_reviews = _fetch_android_reviews(app["android_id"]) if android_data else []
+
+        # Verified App Store chart rank (None when outside the top 200).
+        rank = (
+            _fetch_chart_rank(
+                app["ios_id"],
+                ios_data.get("genre_ids") or [],
+                ios_data.get("genre_names") or [],
+                chart_cache,
+            )
+            if ios_data
+            else None
+        )
 
         # Merge reviews from both stores, sort by publish time desc, take top 4.
         merged = []
@@ -262,16 +339,19 @@ def scrape_all_apps() -> dict:
             },
             "distribution": distribution,
             "analytics": analytics,
+            "rank": rank,
         }
 
         # Logging line per app for journalctl debugging
+        rank_str = f"#{rank['rank']} {rank['genre']}" if rank else "—"
         logger.info(
             f"app {app['key']}: "
             f"iOS={ios_rating}/{ios_count}  "
             f"Android={android_rating}/{android_count}  "
             f"reviews={len(merged)}  "
             f"velocity={analytics['velocity_per_week']}/wk  "
-            f"positive={analytics['positive_pct']}%"
+            f"positive={analytics['positive_pct']}%  "
+            f"rank={rank_str}"
         )
 
     return {
