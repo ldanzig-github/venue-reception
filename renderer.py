@@ -505,8 +505,21 @@ def render(data: dict) -> str:
     venues_html = "\n\n  ".join(
         _venue_block(meta, data["venues"].get(meta["key"], {})) for meta in VENUE_META
     )
+    # Apps tab is always ordered ascending by review count (least → most).
+    apps_data = data.get("apps") or {}
+
+    def _app_review_count(meta):
+        a = apps_data.get(meta["key"], {})
+        return (
+            (a.get("combined") or {}).get("count")
+            or (a.get("ios") or {}).get("count")
+            or (a.get("android") or {}).get("count")
+            or 0
+        )
+
     apps_html = "\n\n  ".join(
-        _app_block(meta, (data.get("apps") or {}).get(meta["key"], {})) for meta in APP_META
+        _app_block(meta, apps_data.get(meta["key"], {}))
+        for meta in sorted(APP_META, key=_app_review_count)
     )
     return (_TEMPLATE
         .replace("{{LAST_SCRAPE}}", escape(last_scrape))
