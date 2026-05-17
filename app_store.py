@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import requests
@@ -218,6 +219,116 @@ def _fetch_chart_rank(
     return best
 
 
+# ─── App Store rating histogram (amp-api) ────────────────────────────────
+# iTunes lookup gives only the average + total count — no star breakdown.
+# The lifetime histogram the App Store shows comes from Apple's internal
+# amp-api, which needs a bearer token. We harvest a fresh token by loading
+# an App Store page in headless Chromium (same engine the venue scraper
+# uses) and intercepting the request Apple's own page makes — letting
+# Apple mint the token keeps this durable vs. hardcoding one. The token is
+# a long-lived JWT, so it's cached on disk and reused across cycles.
+_AMP_TOKEN_PATH = Path(__file__).parent / "data" / ".amp_token"
+_AMP_HARVEST_APP_ID = "1608987929"  # any App Store page works
+
+
+def _harvest_amp_token() -> Optional[str]:
+    """Intercept a fresh amp-api bearer token from an App Store web page."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        logger.warning("playwright unavailable — cannot harvest amp-api token")
+        return None
+    grabbed: dict = {}
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            page = browser.new_page()
+
+            def _on_request(req):
+                auth = req.headers.get("authorization", "")
+                if "amp-api" in req.url and auth.lower().startswith("bearer "):
+                    grabbed["token"] = auth.split(" ", 1)[1]
+
+            page.on("request", _on_request)
+            try:
+                page.goto(
+                    f"https://apps.apple.com/us/app/id{_AMP_HARVEST_APP_ID}",
+                    wait_until="load", timeout=30000,
+                )
+                page.wait_for_timeout(3000)  # let the amp-api XHRs fire
+            except Exception as e:
+                logger.warning(f"amp-api harvest page load: {e}")
+            browser.close()
+    except Exception as e:
+        logger.warning(f"amp-api token harvest failed: {e}")
+    return grabbed.get("token")
+
+
+def _get_amp_token(force_refresh: bool = False) -> Optional[str]:
+    """Cached amp-api token; harvests a fresh one when missing or forced."""
+    if not force_refresh:
+        try:
+            cached = _AMP_TOKEN_PATH.read_text(encoding="utf-8").strip()
+            if cached:
+                return cached
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            logger.warning(f"amp-api token cache read failed: {e}")
+    token = _harvest_amp_token()
+    if token:
+        try:
+            _AMP_TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
+            _AMP_TOKEN_PATH.write_text(token, encoding="utf-8")
+        except Exception as e:
+            logger.warning(f"amp-api token cache write failed: {e}")
+    return token
+
+
+def _fetch_ios_histogram(app_id: str, token: str):
+    """
+    Verified lifetime star histogram for an iOS app from Apple's amp-api —
+    the exact data the App Store renders. Returns {"5":n,...,"1":n}, the
+    string "EXPIRED" when the token is stale, or None on any other miss.
+    """
+    if not token:
+        return None
+    try:
+        r = requests.get(
+            f"https://amp-api.apps.apple.com/v1/catalog/us/apps/{app_id}",
+            params={"platform": "web", "l": "en-US"},
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Origin": "https://apps.apple.com",
+            },
+            timeout=15,
+        )
+        if r.status_code in (401, 403):
+            return "EXPIRED"
+        r.raise_for_status()
+        data = r.json().get("data") or []
+        if not data:
+            return None
+        attrs = data[0].get("attributes") or {}
+        ur = attrs.get("userRating") or {}
+        rcl = ur.get("ratingCountList")
+        if not isinstance(rcl, list) or len(rcl) != 5:
+            # One-time diagnostic so a single deploy reveals the response shape.
+            logger.warning(
+                f"amp-api {app_id}: no ratingCountList — "
+                f"userRating keys={list(ur.keys())}  attr keys={list(attrs.keys())[:14]}"
+            )
+            return None
+        # amp-api ratingCountList is ascending: index 0 = 1★ … index 4 = 5★.
+        return {
+            "1": int(rcl[0]), "2": int(rcl[1]), "3": int(rcl[2]),
+            "4": int(rcl[3]), "5": int(rcl[4]),
+        }
+    except Exception as e:
+        logger.warning(f"amp-api histogram failed for {app_id}: {e}")
+        return None
+
+
 # ─── Google Play (via google-play-scraper) ───────────────────────────────
 def _fetch_android(package_name: str) -> Optional[dict]:
     try:
@@ -281,11 +392,22 @@ def scrape_all_apps() -> dict:
     """
     out_apps = {}
     chart_cache: dict = {}  # genre_id -> ordered app-id list, shared across this cycle
+    amp_token = _get_amp_token()  # for verified iOS lifetime histograms
     for app in APPS:
         ios_data = _fetch_ios(app["ios_id"]) if app.get("ios_id") else None
         android_data = _fetch_android(app["android_id"]) if app.get("android_id") else None
         ios_reviews = _fetch_ios_reviews(app["ios_id"]) if ios_data else []
         android_reviews = _fetch_android_reviews(app["android_id"]) if android_data else []
+
+        # Verified lifetime star histogram from Apple's amp-api. On a stale
+        # token (401), refresh once and retry — covers the ~6-month expiry.
+        if ios_data and amp_token:
+            hist = _fetch_ios_histogram(app["ios_id"], amp_token)
+            if hist == "EXPIRED":
+                amp_token = _get_amp_token(force_refresh=True)
+                hist = _fetch_ios_histogram(app["ios_id"], amp_token) if amp_token else None
+            if isinstance(hist, dict):
+                ios_data["distribution"] = hist
 
         # Verified App Store chart rank (None when outside the top 200).
         rank = (
@@ -354,6 +476,11 @@ def scrape_all_apps() -> dict:
 
         # Logging line per app for journalctl debugging
         rank_str = f"#{rank['rank']} {rank['genre']}" if rank else "—"
+        ios_hist = (ios_data or {}).get("distribution")
+        hist_str = (
+            "/".join(str(ios_hist.get(s, 0)) for s in ("5", "4", "3", "2", "1"))
+            if ios_hist else "—"
+        )
         logger.info(
             f"app {app['key']}: "
             f"iOS={ios_rating}/{ios_count}  "
@@ -361,7 +488,8 @@ def scrape_all_apps() -> dict:
             f"reviews={len(merged)}  "
             f"velocity={analytics['velocity_per_week']}/wk  "
             f"positive={analytics['positive_pct']}%  "
-            f"rank={rank_str}"
+            f"rank={rank_str}  "
+            f"hist[5-1]={hist_str}"
         )
 
     return {
