@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from html import escape
 from pathlib import Path
 
@@ -497,6 +497,136 @@ def _hero_strip(summary, label_singular):
     </div>'''
 
 
+# ─── feed tab ────────────────────────────────────────────────────────────
+def _rel_to_dt(s: str, now: datetime):
+    """Best-effort timestamp from an ISO date or a Google-style relative string."""
+    s = (s or "").strip().lower()
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s[:10])
+    except Exception:
+        pass
+    if "today" in s or "hour" in s or "minute" in s or "just now" in s:
+        return now
+    if "yesterday" in s:
+        return now - timedelta(days=1)
+    head = s.split()[0] if s.split() else ""
+    n = int(head) if head.isdigit() else 1
+    for unit, days in (("year", 365), ("month", 30), ("week", 7), ("day", 1)):
+        if unit in s:
+            return now - timedelta(days=n * days)
+    return None
+
+
+def _feed_event_html(e: dict) -> str:
+    if e["kind"] == "review":
+        body = (
+            f'<span class="fe-stars">{_stars(e["rating"])}</span> '
+            f'<span class="fe-quote">"{escape(e["snippet"])}"</span> '
+            f'<span class="fe-author">— {escape(e["author"])}</span>'
+        )
+    else:
+        body = escape(e["text"])
+    return (
+        '<div class="feed-event">'
+        f'<div class="fe-icon {e["icon_cls"]}">{escape(e["icon"])}</div>'
+        '<div class="fe-main">'
+        f'<div class="fe-entity">{escape(e["entity"])}</div>'
+        f'<div class="fe-text">{body}</div>'
+        '</div>'
+        f'<div class="fe-when">{escape(e.get("when", ""))}</div>'
+        '</div>'
+    )
+
+
+def _feed_block(data: dict) -> str:
+    """Reverse-chronological feed of recent reviews + data updates across all entities."""
+    from app_store import APPS as APP_META
+    now = datetime.now()
+    venue_names = {m["key"]: m["name"] for m in VENUE_META}
+    app_names = {m["key"]: m["name"] for m in APP_META}
+
+    entities = []
+    for k, v in (data.get("venues") or {}).items():
+        entities.append((venue_names.get(k, k.replace("_", " ").title()), v))
+    for k, a in (data.get("apps") or {}).items():
+        entities.append((app_names.get(k, k.replace("_", " ").title()), a))
+
+    events = []
+
+    # Review events — one per real review across every venue and app.
+    for name, ent in entities:
+        for rev in (ent.get("reviews") or []):
+            body = (rev.get("body") or "").strip()
+            if not body or body == "—":
+                continue
+            when = rev.get("when") or (rev.get("publish_time") or "")[:10]
+            ts = _rel_to_dt(rev.get("publish_time") or rev.get("when") or "", now)
+            rating = rev.get("rating") or 0
+            events.append({
+                "ts": ts or datetime(1970, 1, 1),
+                "dated": ts is not None,
+                "kind": "review",
+                "icon": "★",
+                "icon_cls": "good" if rating >= 4 else ("bad" if 0 < rating <= 2 else "mid"),
+                "entity": name,
+                "rating": rating,
+                "snippet": body[:150],
+                "author": rev.get("name") or "Anonymous",
+                "when": when,
+            })
+
+    # Data-update events — freshest trend window per entity that moved.
+    for name, ent in entities:
+        trends = ent.get("trends") or {}
+        for win in ("24h", "7d", "30d"):
+            d = trends.get(win)
+            if not d:
+                continue
+            cd, rd = d.get("count_delta"), d.get("rating_delta")
+            if not cd and not rd:
+                continue
+            bits, icon, icon_cls = [], "+", "good"
+            if cd:
+                bits.append(f"{'+' if cd > 0 else '−'}{abs(cd)} review{'' if abs(cd) == 1 else 's'}")
+                icon = "+" if cd > 0 else "−"
+                icon_cls = "good" if cd > 0 else "bad"
+            if rd:
+                bits.append(f"rating {'+' if rd > 0 else '−'}{abs(rd):.2f}★")
+                if not cd:
+                    icon, icon_cls = ("▲", "good") if rd > 0 else ("▼", "bad")
+            events.append({
+                "ts": now, "dated": True, "kind": "update",
+                "icon": icon, "icon_cls": icon_cls, "entity": name,
+                "text": " · ".join(bits), "when": f"in {win}",
+            })
+            break
+
+    if not events:
+        return ('<div class="feed"><div class="feed-empty">No activity yet — the feed '
+                'fills in as reviews and trend data accumulate.</div></div>')
+
+    events.sort(key=lambda e: e["ts"], reverse=True)
+
+    today = now.date()
+    yesterday = today - timedelta(days=1)
+    out, cur = [], object()
+    for e in events:
+        if e["dated"]:
+            d = e["ts"].date()
+            label = ("Today" if d == today
+                     else "Yesterday" if d == yesterday
+                     else e["ts"].strftime("%B %-d, %Y"))
+        else:
+            d, label = None, "Earlier"
+        if d != cur:
+            cur = d
+            out.append(f'<div class="feed-day-header">{escape(label)}</div>')
+        out.append(_feed_event_html(e))
+    return '<div class="feed">' + "".join(out) + '</div>'
+
+
 # ─── render ────────────────────────────────────────────────────────────────
 def render(data: dict) -> str:
     from app_store import APPS as APP_META
@@ -528,7 +658,8 @@ def render(data: dict) -> str:
         .replace("{{VENUES_COUNT}}", str(len(VENUE_META)))
         .replace("{{APPS_COUNT}}", str(len(APP_META)))
         .replace("{{VENUES}}", venues_html)
-        .replace("{{APPS}}", apps_html))
+        .replace("{{APPS}}", apps_html)
+        .replace("{{FEED}}", _feed_block(data)))
 
 
 def write_dashboard(data: dict, html_path: Path, json_path: Path | None = None):
@@ -797,6 +928,45 @@ body {
 .rev-who .when { color: var(--ink-faint); }
 .rev-who a { color: inherit; text-decoration: none; }
 
+/* ─── feed tab ─── */
+.feed { max-width: 920px; }
+.feed-empty {
+  color: var(--ink-faint); font-size: 13px; text-align: center; padding: 32px 16px;
+}
+.feed-day-header {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--ink-faint); font-weight: 700;
+  margin: 20px 0 4px; padding-bottom: 5px; border-bottom: 1px solid var(--line);
+}
+.feed-day-header:first-child { margin-top: 0; }
+.feed-event {
+  display: flex; gap: 11px; align-items: flex-start;
+  padding: 9px 4px; border-bottom: 1px dashed var(--line-soft);
+}
+.feed-event:last-child { border-bottom: none; }
+.fe-icon {
+  flex: none; width: 22px; height: 22px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 700; margin-top: 1px;
+}
+.fe-icon.good { background: #dcfce7; color: #166534; }
+.fe-icon.bad  { background: #fee2e2; color: #991b1b; }
+.fe-icon.mid  { background: #fef3c7; color: #92400e; }
+.fe-main { flex: 1; min-width: 0; }
+.fe-entity {
+  font-size: 11px; font-weight: 700; color: var(--ink);
+  text-transform: uppercase; letter-spacing: 0.03em;
+}
+.fe-text { font-size: 12.5px; color: var(--ink-soft); margin-top: 1px; line-height: 1.45; }
+.fe-stars { color: #f59e0b; font-size: 10.5px; letter-spacing: 0.6px; }
+.fe-stars .muted { color: #cbd5e1; }
+.fe-quote { color: var(--ink); }
+.fe-author { color: var(--ink-faint); }
+.fe-when {
+  flex: none; font-size: 10px; color: var(--ink-faint);
+  white-space: nowrap; margin-top: 3px;
+}
+
 /* ── footer ── */
 .foot {
   margin-top: 16px; font-size: 10.5px; color: var(--ink-faint);
@@ -815,6 +985,7 @@ body {
   <nav class="tabs" role="tablist">
     <button class="tab" data-tab="venues" role="tab">Venues<span class="ct">{{VENUES_COUNT}}</span></button>
     <button class="tab" data-tab="apps"   role="tab">Apps<span class="ct">{{APPS_COUNT}}</span></button>
+    <button class="tab" data-tab="feed"   role="tab">Feed</button>
   </nav>
 
   <section id="panel-venues" class="panel">
@@ -827,12 +998,16 @@ body {
     {{APPS}}
   </section>
 
+  <section id="panel-feed" class="panel">
+    {{FEED}}
+  </section>
+
   <div class="foot">Standalone deployment · auto-reload 5min · scrape every 30min</div>
 </div>
 <script>
 document.getElementById('now').textContent = new Date().toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 function setTab(name) {
-  if (!['venues','apps'].includes(name)) name = 'venues';
+  if (!['venues','apps','feed'].includes(name)) name = 'venues';
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
   document.querySelectorAll('.panel').forEach(p => p.classList.toggle('hidden', p.id !== 'panel-' + name));
   history.replaceState(null, '', '#' + name);
