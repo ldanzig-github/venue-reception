@@ -449,9 +449,31 @@ def scrape_all_venues(headless: bool = True) -> dict:
                             if supplemental.get("distribution"):
                                 data["distribution"] = supplemental["distribution"]
                                 logger.info(f"{target['key']}: lifetime distribution from headless aria-labels")
-                            if supplemental.get("reviews"):
-                                data["reviews"] = supplemental["reviews"]
-                                logger.info(f"{target['key']}: {len(supplemental['reviews'])} newest reviews from headless")
+                            headless_revs = supplemental.get("reviews") or []
+                            if headless_revs:
+                                # Prefer the headless reviews (true newest-first
+                                # order), but top up from the relevance-sorted
+                                # Places API reviews so the card always has 4 —
+                                # the headless panel often yields fewer than 4.
+                                api_revs = data.get("reviews") or []
+                                seen = {
+                                    (r.get("name", ""), (r.get("body", "") or "")[:60])
+                                    for r in headless_revs
+                                }
+                                combined = list(headless_revs)
+                                for r in api_revs:
+                                    if len(combined) >= 4:
+                                        break
+                                    key = (r.get("name", ""), (r.get("body", "") or "")[:60])
+                                    if key not in seen:
+                                        seen.add(key)
+                                        combined.append(r)
+                                data["reviews"] = combined
+                                topup = len(combined) - len(headless_revs)
+                                logger.info(
+                                    f"{target['key']}: {len(combined)} reviews "
+                                    f"({len(headless_revs)} headless + {topup} API top-up)"
+                                )
                     except Exception as e:
                         logger.warning(f"{target['key']}: supplemental headless scrape failed: {e}")
 
