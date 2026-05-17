@@ -261,12 +261,49 @@ SEARCH_KP_JS = r"""
 """
 
 
+def _dismiss_consent(page) -> bool:
+    """
+    Dismiss Google's EU cookie-consent interstitial if present.
+
+    Google serves it on the first request from an EU IP (the VPS is in
+    Germany). Without handling it on the Maps load, whichever venue is
+    scraped first stays stuck behind the wall while later venues succeed
+    once a fallback page happens to set the consent cookie. Returns True
+    if a consent dialog was found and dismissed.
+    """
+    try:
+        for sel in (
+            'button:has-text("Reject all")',
+            'button:has-text("Accept all")',
+            'button:has-text("I agree")',
+            'button[aria-label*="Reject"]',
+            'button[aria-label*="Accept"]',
+        ):
+            btn = page.query_selector(sel)
+            if btn:
+                btn.click()
+                page.wait_for_timeout(2500)
+                return True
+    except Exception as e:
+        logger.warning(f"consent dismiss failed: {e}")
+    return False
+
+
 def _scrape_one(page, target):
     try:
         page.goto(target["url"], timeout=30000, wait_until="domcontentloaded")
     except Exception as e:
         logger.warning(f"goto failed for {target['key']}: {e}")
         return None
+    # Google's EU cookie-consent interstitial blocks the first request from
+    # an EU IP. Dismiss it and reload so the first venue each cycle isn't
+    # stuck behind the wall (historically that was always Poolhouse).
+    if _dismiss_consent(page):
+        logger.info(f"{target['key']}: dismissed Google consent wall")
+        try:
+            page.goto(target["url"], timeout=30000, wait_until="domcontentloaded")
+        except Exception as e:
+            logger.warning(f"{target['key']}: reload after consent failed: {e}")
     # Wait for the data we care about to actually render. Google Maps
     # redirects /maps/search → /maps/place asynchronously and the review
     # count appears late; Tripadvisor lazy-loads the rating block. With
@@ -292,7 +329,10 @@ def _scrape_one(page, target):
                     page.wait_for_timeout(3000)
                     page.wait_for_function(ready_re, timeout=12000)
                 else:
-                    logger.warning(f"{target['key']}: venue data didn't render; scraping what's there")
+                    logger.warning(
+                        f"{target['key']}: venue data didn't render "
+                        f"(url={(page.url or '')[:110]}); scraping what's there"
+                    )
             except Exception as e:
                 logger.warning(f"{target['key']}: click-to-place failed ({e}); scraping what's there")
 
@@ -368,14 +408,8 @@ def _scrape_one(page, target):
             logger.info(f"{target['key']}: Maps gave limited view, trying Search knowledge panel")
             page.goto(search_url, timeout=30000, wait_until="domcontentloaded")
             page.wait_for_timeout(4000)
-            # Reject consent walls quickly if encountered
-            try:
-                btn = page.query_selector('button:has-text("Reject all"), button:has-text("I agree")')
-                if btn:
-                    btn.click()
-                    page.wait_for_timeout(2000)
-            except Exception:
-                pass
+            if _dismiss_consent(page):
+                page.wait_for_timeout(2000)
             search_raw = page.evaluate(SEARCH_KP_JS)
             search_data = json.loads(search_raw) if search_raw else None
             if search_data and search_data.get("count"):
