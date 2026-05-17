@@ -80,6 +80,16 @@ APPS = [
         "android_url": None,
         "insight_kind": "good",
     },
+    {
+        "key": "packz",
+        "name": "Packz",
+        "tagline": "Trading card pack openings",
+        "ios_id": "6755495631",
+        "android_id": None,
+        "ios_url":     "https://apps.apple.com/us/app/packz/id6755495631",
+        "android_url": None,
+        "insight_kind": "good",
+    },
 ]
 
 
