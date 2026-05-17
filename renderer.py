@@ -361,21 +361,18 @@ def _app_block(meta, data):
     while len(reviews) < 4:
         reviews.append({"source": "ios", "rating": 0, "body": "—", "name": "—", "when": "", "url": meta.get("ios_url","#")})
 
-    # Verified lifetime star histogram. iOS comes from Apple's amp-api,
-    # Android from the Play Store histogram — each validated against that
-    # store's own rating count so a partial/sampled histogram never renders
-    # as "lifetime". iOS is preferred (most tracked apps are iOS-only).
+    # Distribution must represent the LIFETIME breakdown (Android histogram).
+    # iOS-only apps don't expose a lifetime histogram via any public endpoint;
+    # showing a 50-review sample as "distribution" misleads when lifetime is millions.
+    android_hist = (android.get("distribution") or {})
+    android_total = (android.get("count") or 0)
     dist = {}
     dist_label = "lifetime distribution unavailable"
-    for store_data, store_word in ((ios, "iOS"), (android, "Android")):
-        hist = store_data.get("distribution") or {}
-        store_total = store_data.get("count") or 0
-        if hist:
-            h_total = sum(int(hist.get(str(s), 0)) for s in (5, 4, 3, 2, 1))
-            if h_total > 0 and abs(h_total - store_total) / max(store_total, 1) < 0.10:
-                dist = hist
-                dist_label = f"{fmt_count(h_total)} {store_word} ratings"
-                break
+    if android_hist:
+        h_total = sum(int(android_hist.get(str(s), 0)) for s in (5, 4, 3, 2, 1))
+        if h_total > 0 and abs(h_total - android_total) / max(android_total, 1) < 0.10:
+            dist = android_hist
+            dist_label = f"{fmt_count(h_total)} Android ratings"
     sparkline_html = _sparkline(data.get("sparkline") or [], "count")
 
     primary_rating = combined.get("rating") or ios.get("rating") or android.get("rating")
