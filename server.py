@@ -7,6 +7,7 @@ production via venue-dashboard.service.
 """
 from __future__ import annotations
 
+import hmac
 import logging
 import os
 from pathlib import Path
@@ -65,14 +66,38 @@ def _do_scrape_cycle():
         log.exception("scrape cycle failed; previous file kept")
 
 
+def _parse_basic_auth(raw: str) -> dict:
+    """
+    Parse VENUE_RECEPTION_BASIC_AUTH into {username: password}.
+
+    Supports multiple accounts as comma-separated pairs:
+        user1:pass1,user2:pass2
+    A single pair (no comma) still works — backward compatible. Passwords
+    must not contain ',' (hex tokens from `openssl rand -hex` are safe).
+    """
+    creds = {}
+    for pair in raw.split(","):
+        pair = pair.strip()
+        if not pair or ":" not in pair:
+            continue
+        user, _, pw = pair.partition(":")
+        user = user.strip()
+        if user:
+            creds[user] = pw
+    return creds
+
+
+BASIC_AUTH_USERS = _parse_basic_auth(BASIC_AUTH)
+
+
 def _check_basic_auth():
-    if not BASIC_AUTH:
+    if not BASIC_AUTH_USERS:
         return True
     auth = request.authorization
-    if not auth:
+    if not auth or auth.username not in BASIC_AUTH_USERS:
         return False
-    expected_user, _, expected_pw = BASIC_AUTH.partition(":")
-    return auth.username == expected_user and auth.password == expected_pw
+    # Constant-time compare so the password check doesn't leak via timing.
+    return hmac.compare_digest(auth.password or "", BASIC_AUTH_USERS[auth.username])
 
 
 def _basic_auth_response():
