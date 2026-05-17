@@ -232,66 +232,35 @@ _AMP_HARVEST_APP_ID = "1608987929"  # any App Store page works
 
 
 def _harvest_amp_token() -> Optional[str]:
-    """
-    Intercept a fresh amp-api bearer token by loading an App Store page in
-    headless Chromium and reading the Authorization header off the request
-    Apple's own page makes to amp-api. Reads headers via all_headers() (the
-    quick .headers property can omit auth) and polls until the SPA fires
-    its data call. Logs a diagnostic either way.
-    """
+    """Intercept a fresh amp-api bearer token from an App Store web page."""
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
         logger.warning("playwright unavailable — cannot harvest amp-api token")
         return None
     grabbed: dict = {}
-    seen = {"n": 0}
     try:
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=True)
-            ctx = browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
-                ),
-                locale="en-US",
-            )
-            page = ctx.new_page()
+            page = browser.new_page()
 
-            def _on_response(resp):
-                if "amp-api" not in resp.url:
-                    return
-                seen["n"] += 1
-                if "token" in grabbed:
-                    return
-                try:
-                    auth = resp.request.all_headers().get("authorization", "")
-                    if auth.lower().startswith("bearer "):
-                        grabbed["token"] = auth.split(" ", 1)[1]
-                except Exception as e:
-                    logger.warning(f"amp-api header read failed: {e}")
+            def _on_request(req):
+                auth = req.headers.get("authorization", "")
+                if "amp-api" in req.url and auth.lower().startswith("bearer "):
+                    grabbed["token"] = auth.split(" ", 1)[1]
 
-            page.on("response", _on_response)
+            page.on("request", _on_request)
             try:
                 page.goto(
                     f"https://apps.apple.com/us/app/id{_AMP_HARVEST_APP_ID}",
-                    wait_until="domcontentloaded", timeout=30000,
+                    wait_until="load", timeout=30000,
                 )
+                page.wait_for_timeout(3000)  # let the amp-api XHRs fire
             except Exception as e:
                 logger.warning(f"amp-api harvest page load: {e}")
-            # Poll up to ~15s for Apple's SPA to call amp-api.
-            for _ in range(30):
-                if "token" in grabbed:
-                    break
-                page.wait_for_timeout(500)
             browser.close()
     except Exception as e:
         logger.warning(f"amp-api token harvest failed: {e}")
-    if grabbed.get("token"):
-        logger.info(f"amp-api token harvested ({seen['n']} amp-api responses seen)")
-    else:
-        logger.warning(f"amp-api token NOT harvested ({seen['n']} amp-api responses seen)")
     return grabbed.get("token")
 
 
