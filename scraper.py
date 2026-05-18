@@ -116,38 +116,14 @@ VENUE_TARGETS = [
 
 
 # ─── Tripadvisor fallback values ─────────────────────────────────────────
-# Tripadvisor blocks data-center IPs aggressively (CAPTCHA / anti-bot),
-# so live scrapes from a VPS are unreliable. Verified manually May 1, 2026
-# via a residential browser. Update by editing this dict whenever you
-# check those pages live. Google data is NEVER faked — if Google scrape
-# fails, the dashboard panel for that venue stays empty.
+# Tripadvisor blocks data-center IPs aggressively (CAPTCHA / anti-bot), so
+# live scrapes from a VPS are impossible. Only the rating / count / ranking
+# numbers are kept here — verified manually; update by editing this dict.
+# Review TEXT is never hardcoded: venue reviews come only from the live
+# Google scrape, so the "most recent reviews" panel is always real.
 TRIP_FALLBACKS = {
-    "poolhouse_trip": {
-        "rating": "5.0", "count": "4", "ranking": "#290 of 1,007",
-        "reviews": [
-            {"name": "Ian S",    "date": "Apr 17, 2026", "title": "Fun evening with friends",
-             "body": "Lively, impressive, spacious venue. Pool table tech and games are superb."},
-            {"name": "Paul K",   "date": "Apr 9, 2026",  "title": "Pool house the next pool generation in",
-             "body": "What an awesome experience! Interactive pool that creates a level playing field for all players. This will become big."},
-            {"name": "Daniel M", "date": "Apr 9, 2026",  "title": "Great night out!",
-             "body": "Great place, great service, great food and drinks. And the pool games are a lot of fun. Special thanks to Ethan for helping to explain how it all worked!"},
-            {"name": "Michael P","date": "Apr 9, 2026",  "title": "Awesome Experience",
-             "body": "An absolutely awesome concept beautifully executed with great food and super friendly staff."},
-        ],
-    },
-    "dubai_trip": {
-        "rating": "5.0", "count": "377", "ranking": "#1 of 474",
-        "reviews": [
-            {"name": "Wanderer65209268966", "date": "Apr 2026", "title": "Minigolf, Amazing review",
-             "body": "Mini golf was amazing, Emma and JC were super helpful! 10/10 would recommend."},
-            {"name": "Divya K",              "date": "Apr 2026", "title": "Miniature Golf",
-             "body": "Tried the 9 hole miniature golf and had a blast! Emma was an absolute pleasure and helped us out with everything."},
-            {"name": "Naveen n",             "date": "Apr 2026", "title": "Great Time Well Spent",
-             "body": "I had a great time and really enjoyed every moment. It was refreshing."},
-            {"name": "Dreamer25511642592",   "date": "Apr 2026", "title": "Good",
-             "body": "Emma hospitality is very good"},
-        ],
-    },
+    "poolhouse_trip": {"rating": "5.0", "count": "4", "ranking": "#290 of 1,007"},
+    "dubai_trip": {"rating": "5.0", "count": "377", "ranking": "#1 of 474"},
 }
 
 
@@ -583,8 +559,8 @@ def _build_dashboard_data(scrape: dict) -> dict:
         x = d.get("distribution", {}) or {}
         return [int(x.get(str(s), 0)) for s in (5, 4, 3, 2, 1)]
 
-    def merge(google_data, trip_data, ot_reviews=None, max_n=4):
-        """Combine reviews from all sources, sort by publish date (newest first), take top N."""
+    def merge(google_data, max_n=4):
+        """Live Google reviews, sorted by publish date (newest first), top N."""
         pool = []
         for r in (google_data or {}).get("reviews", []) or []:
             pool.append({
@@ -596,36 +572,17 @@ def _build_dashboard_data(scrape: dict) -> dict:
                 "_date_key": _parse_review_date(r),
                 "url": "https://www.google.com/maps/place/_",
             })
-        for r in (trip_data or {}).get("reviews", []) or []:
-            pool.append({
-                "source": "t", "rating": 5,
-                "body": r.get("body", ""), "name": r.get("name", ""),
-                "when": (r.get("date") or "").split("•")[0].strip() or "Tripadvisor",
-                "_date_key": _parse_review_date(r),
-                "url": "https://www.tripadvisor.com/",
-            })
-        for r in (ot_reviews or []):
-            r2 = dict(r)
-            r2.setdefault("_date_key", _parse_review_date(r))
-            pool.append(r2)
         # Sort newest first; entries with no parseable date sink to the bottom.
         pool.sort(key=lambda x: x.get("_date_key") or datetime(1970, 1, 1, tzinfo=timezone.utc), reverse=True)
         for r in pool:
             r.pop("_date_key", None)
         return pool[:max_n]
 
-    # Build merged review lists once so analytics can use them too
-    poolhouse_reviews = merge(poolhouse_g, poolhouse_t)
-    philly_ot_reviews = [
-        {"source": "o", "rating": 5, "body": "Great vibe, great service and hospitality, excellent food and drinks (cocktails and a long liquor list!).", "name": "OpenTable diner", "when": "recent", "url": "https://www.opentable.com/r/ballers-philadelphia"},
-        {"source": "o", "rating": 5, "body": "Best meatballs and drinks ever!", "name": "OpenTable diner", "when": "recent", "url": "https://www.opentable.com/r/ballers-philadelphia"},
-    ]
-    philly_reviews = merge(philly_g, None, ot_reviews=philly_ot_reviews)
-    boston_ot_reviews = [
-        {"source": "o", "rating": 5, "body": "Fun setting, great service, grilled cheese, tomato soup, s'mores hot chocolate.", "name": "OpenTable diner", "when": "recent", "url": "https://www.opentable.com/r/ballers-boston"},
-    ]
-    boston_reviews = merge(boston_g, None, ot_reviews=boston_ot_reviews)
-    dubai_reviews = merge(dubai_g, dubai_t)
+    # Venue reviews come only from the live Google scrape — never hardcoded.
+    poolhouse_reviews = merge(poolhouse_g)
+    philly_reviews = merge(philly_g)
+    boston_reviews = merge(boston_g)
+    dubai_reviews = merge(dubai_g)
 
     return {
         "last_scrape": datetime.now().strftime("%b %-d, %Y · %-I:%M %p"),
