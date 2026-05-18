@@ -58,6 +58,21 @@ def _parse_review_date(rev: dict) -> datetime:
         }[unit]
         return datetime.now(timezone.utc) - delta
 
+    # Google Maps phrases its MOST-RECENT reviews as "in the last week",
+    # "in the last month", "in the last day" — no number, no "ago". Without
+    # this branch the freshest Google reviews fail every parse above and sink
+    # to the 1970 sentinel, ranking below month-old dated reviews.
+    m_recent = re.search(r"in the last (hour|day|week|month|year)", desc)
+    if m_recent:
+        delta = {
+            "hour": timedelta(minutes=30),
+            "day": timedelta(hours=12),
+            "week": timedelta(days=3),
+            "month": timedelta(days=15),
+            "year": timedelta(days=180),
+        }[m_recent.group(1)]
+        return datetime.now(timezone.utc) - delta
+
     # Tripadvisor-style "Apr 17, 2026" / "Apr 2026"
     cleaned = re.sub(r"•.*$", "", desc).strip()
     for fmt in ("%b %d, %Y", "%B %d, %Y", "%b %Y", "%B %Y"):
