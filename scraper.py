@@ -491,6 +491,16 @@ def scrape_all_venues(headless: bool = True) -> dict:
                                 f"https://www.google.com/maps/place/?q=place_id:{pid}"
                             )
                         supplemental = _scrape_one(page, sup_target)
+                        if not (supplemental and supplemental.get("distribution")):
+                            # Google serves the first Maps load of a cold
+                            # browser in degraded "limited view". A second
+                            # attempt on the now-warm session gets the full
+                            # venue panel — this is why the first venue each
+                            # cycle (Poolhouse) used to fail and the rest didn't.
+                            logger.info(f"{target['key']}: no distribution on first pass — retrying")
+                            retry = _scrape_one(page, sup_target)
+                            if retry and (retry.get("distribution") or not supplemental):
+                                supplemental = retry
                         if supplemental:
                             if supplemental.get("distribution"):
                                 data["distribution"] = supplemental["distribution"]
