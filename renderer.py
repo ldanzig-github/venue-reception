@@ -361,9 +361,12 @@ def _app_block(meta, data):
     while len(reviews) < 4:
         reviews.append({"source": "ios", "rating": 0, "body": "—", "name": "—", "when": "", "url": meta.get("ios_url","#")})
 
-    # Distribution must represent the LIFETIME breakdown (Android histogram).
-    # iOS-only apps don't expose a lifetime histogram via any public endpoint;
-    # showing a 50-review sample as "distribution" misleads when lifetime is millions.
+    # Distribution panel, in preference order:
+    #   1. Android lifetime histogram — the Play Store exposes the real
+    #      per-star breakdown; shown when it reconciles with the rating count.
+    #   2. recent-reviews sample — iOS publishes no lifetime histogram, so for
+    #      iOS-only apps we render the star breakdown of the most recent ~N
+    #      reviews, labelled honestly as a sample (never claimed "lifetime").
     android_hist = (android.get("distribution") or {})
     android_total = (android.get("count") or 0)
     dist = {}
@@ -373,6 +376,12 @@ def _app_block(meta, data):
         if h_total > 0 and abs(h_total - android_total) / max(android_total, 1) < 0.10:
             dist = android_hist
             dist_label = f"{fmt_count(h_total)} Android ratings"
+    if not dist:
+        recent = analytics.get("recent_distribution") or {}
+        r_total = sum(int(recent.get(str(s), 0)) for s in (5, 4, 3, 2, 1))
+        if r_total > 0:
+            dist = recent
+            dist_label = f"over last ~{fmt_count(r_total)} reviews"
     sparkline_html = _sparkline(data.get("sparkline") or [], "count")
 
     primary_rating = combined.get("rating") or ios.get("rating") or android.get("rating")

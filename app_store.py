@@ -125,23 +125,41 @@ def _fetch_ios(app_id: str) -> Optional[dict]:
         return None
 
 
-def _fetch_ios_reviews(app_id: str, n: int = 50) -> list[dict]:
-    """RSS feed — returns up to N most-recent reviews (1 page = ~50)."""
-    try:
-        r = requests.get(
-            f"https://itunes.apple.com/us/rss/customerreviews/page=1/id={app_id}/sortby=mostrecent/json",
-            timeout=15,
-        )
-        r.raise_for_status()
-        feed = r.json().get("feed") or {}
-        entries = feed.get("entry") or []
-        # First entry is app metadata (no rating). Skip it.
-        reviews = []
-        for e in entries[1 : n + 1]:
+def _fetch_ios_reviews(app_id: str, max_pages: int = 10) -> list[dict]:
+    """
+    RSS feed — most-recent reviews. Pulls up to `max_pages` pages (~50 each)
+    so the recent-reviews distribution is a meaningful sample. iOS exposes no
+    lifetime star histogram, so this sample is what the app card's
+    distribution panel renders for iOS-only apps.
+
+    Apple's RSS is quirky: a page mid-range can come back empty while later
+    pages still have data (page 1 in particular). So we do NOT early-stop on
+    an empty page — we fetch every page and only stop on a request failure.
+    """
+    reviews: list[dict] = []
+    for page in range(1, max_pages + 1):
+        try:
+            r = requests.get(
+                f"https://itunes.apple.com/us/rss/customerreviews/page={page}"
+                f"/id={app_id}/sortby=mostrecent/json",
+                timeout=15,
+            )
+            r.raise_for_status()
+            entries = (r.json().get("feed") or {}).get("entry") or []
+        except Exception as e:
+            logger.warning(f"iTunes RSS failed for {app_id} page {page}: {e}")
+            break
+        if isinstance(entries, dict):
+            entries = [entries]
+        for e in entries:
+            # Real reviews carry im:rating; the app-metadata entry does not.
+            rating = (e.get("im:rating") or {}).get("label")
+            if rating is None:
+                continue
             try:
                 reviews.append({
                     "name": ((e.get("author") or {}).get("name") or {}).get("label", "Anonymous"),
-                    "rating": int(((e.get("im:rating") or {}).get("label") or 5)),
+                    "rating": int(rating),
                     "title": ((e.get("title") or {}).get("label") or "").strip(),
                     "body": ((e.get("content") or {}).get("label") or "").strip()[:280],
                     "version": ((e.get("im:version") or {}).get("label") or ""),
@@ -151,10 +169,7 @@ def _fetch_ios_reviews(app_id: str, n: int = 50) -> list[dict]:
                 })
             except Exception as inner:
                 logger.warning(f"iTunes RSS entry parse error: {inner}")
-        return reviews
-    except Exception as e:
-        logger.warning(f"iTunes RSS failed for {app_id}: {e}")
-        return []
+    return reviews
 
 
 # ─── App Store chart rank ────────────────────────────────────────────────
