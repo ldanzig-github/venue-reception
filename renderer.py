@@ -684,7 +684,7 @@ _TEMPLATE = """<!DOCTYPE html>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <meta http-equiv="refresh" content="300" />
-<title>Reception · Live</title>
+<title>Sharp Alpha Venue &amp; App Review Dashboard</title>
 <style>
 :root { color-scheme: light;
   --bg: #f7f7f9; --bg-grad: linear-gradient(180deg,#fafbfc 0%,#f4f5f8 100%);
@@ -984,7 +984,7 @@ body {
 </style></head>
 <body><div class="wrap">
   <header class="header">
-    <div class="brand"><span class="title">Reception</span><span class="live">Live</span></div>
+    <div class="brand"><span class="title">Sharp Alpha Venue &amp; App Review Dashboard</span><span class="live">Live</span></div>
     <div class="meta-right">
       <div><strong>Scraped:</strong> {{LAST_SCRAPE}}</div>
       <div><strong>Reloaded:</strong> <span id="now"></span> · refresh in 5min</div>
