@@ -280,6 +280,35 @@ def _dismiss_consent(page) -> bool:
     return False
 
 
+def _sort_reviews_newest(page) -> bool:
+    """
+    Switch the Google Maps reviews panel from its default 'Most relevant'
+    sort to 'Newest'. 'Most relevant' surfaces old highly-rated reviews for
+    established venues; 'Newest' is what the dashboard's "most recent
+    reviews" panel actually wants. Best-effort — returns True only if the
+    sort was changed; otherwise the caller proceeds with the default order.
+    """
+    try:
+        sort_btn = page.query_selector(
+            'button[aria-label*="Sort"], button[data-value="Sort"]'
+        )
+        if not sort_btn:
+            return False
+        sort_btn.click()
+        page.wait_for_timeout(1200)
+        for item in page.query_selector_all(
+            '[role="menuitemradio"], [role="menuitem"], [role="option"]'
+        ):
+            label = (item.inner_text() or "").strip().lower()
+            if label.startswith("newest"):
+                item.click()
+                page.wait_for_timeout(2800)
+                return True
+    except Exception as e:
+        logger.warning(f"review sort failed: {e}")
+    return False
+
+
 def _scrape_one(page, target):
     try:
         page.goto(target["url"], timeout=30000, wait_until="domcontentloaded")
@@ -326,6 +355,12 @@ def _scrape_one(page, target):
                     )
             except Exception as e:
                 logger.warning(f"{target['key']}: click-to-place failed ({e}); scraping what's there")
+
+        # Google Maps defaults to "Most relevant" review sort, which surfaces
+        # old highly-rated reviews for established venues. Switch to "Newest"
+        # so the scraped reviews are genuinely the most recent.
+        if _sort_reviews_newest(page):
+            logger.info(f"{target['key']}: reviews sorted by Newest")
 
         # Some venue panels (e.g. newer venues or short review lists) only
         # lazy-load the per-star distribution after a scroll. Trigger a scroll
