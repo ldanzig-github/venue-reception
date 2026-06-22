@@ -100,6 +100,16 @@ APPS = [
         "android_url": None,
         "insight_kind": "good",
     },
+    {
+        "key": "prophetx",
+        "name": "ProphetX Prediction Market",
+        "tagline": "Prediction market sweepstakes",
+        "ios_id": "6504584166",
+        "android_id": "com.prophetxsweepstake",
+        "ios_url":     "https://apps.apple.com/us/app/prophetx-prediction-market/id6504584166",
+        "android_url": "https://play.google.com/store/apps/details?id=com.prophetxsweepstake",
+        "insight_kind": "good",
+    },
 ]
 
 
