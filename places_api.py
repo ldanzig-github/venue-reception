@@ -3,12 +3,12 @@ Google Places API (New) client — primary source for Google ratings.
 
 When `GOOGLE_PLACES_API_KEY` is set in the environment, the scraper
 uses this module instead of headless-browser scraping for Google data.
-Far more reliable, never blocked, and the free tier ($200/month credit)
-covers ~50 venues at 30-min cadence comfortably.
+Far more reliable and never blocked. Both endpoints cache to disk so the
+30-min scrape loop doesn't re-bill the API on every cycle.
 
 Two endpoints used:
-  • POST /v1/places:searchText        — find a place_id from a text query (cached on disk)
-  • GET  /v1/places/{place_id}        — fetch rating + count + reviews
+  • POST /v1/places:searchText        — find a place_id from a text query (cached forever)
+  • GET  /v1/places/{place_id}        — fetch rating + count + reviews (cached with TTL)
 
 Field mask keeps response payload minimal so we stay in the cheap SKU.
 """
@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -26,6 +27,13 @@ logger = logging.getLogger(__name__)
 
 API_KEY_ENV = "GOOGLE_PLACES_API_KEY"
 PLACE_ID_CACHE = Path(__file__).parent / "data" / "place_ids.json"
+
+# Place Details are re-fetched on every 30-min scrape cycle by default, which
+# re-bills the (expensive) Enterprise+Atmosphere SKU ~48x/day per venue even
+# though ratings/reviews barely move within a day. Cache details on disk with a
+# TTL so we hit the API at most once per TTL window. Override via env.
+DETAILS_CACHE = Path(__file__).parent / "data" / "place_details.json"
+DETAILS_TTL_SECONDS = int(os.getenv("PLACES_DETAILS_TTL_HOURS", "12")) * 3600
 
 # Field masks let us pay only for fields we use (Places API New pricing).
 SEARCH_FIELDS = "places.id,places.displayName"
@@ -43,18 +51,18 @@ def is_enabled() -> bool:
     return bool(os.getenv(API_KEY_ENV, "").strip())
 
 
-def _load_cache() -> dict:
-    if PLACE_ID_CACHE.exists():
+def _load_cache(path: Path = PLACE_ID_CACHE) -> dict:
+    if path.exists():
         try:
-            return json.loads(PLACE_ID_CACHE.read_text())
+            return json.loads(path.read_text())
         except Exception:
             return {}
     return {}
 
 
-def _save_cache(cache: dict) -> None:
-    PLACE_ID_CACHE.parent.mkdir(parents=True, exist_ok=True)
-    PLACE_ID_CACHE.write_text(json.dumps(cache, indent=2))
+def _save_cache(cache: dict, path: Path = PLACE_ID_CACHE) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(cache, indent=2))
 
 
 def find_place_id(text_query: str) -> Optional[str]:
@@ -96,10 +104,23 @@ def find_place_id(text_query: str) -> Optional[str]:
 
 
 def get_place_details(place_id: str) -> Optional[dict]:
-    """Fetch rating / count / reviews for a place_id."""
+    """Fetch rating / count / reviews for a place_id.
+
+    Cached on disk with a TTL (default 12h, override via PLACES_DETAILS_TTL_HOURS)
+    so the 30-min scrape loop doesn't re-bill the Enterprise+Atmosphere SKU on
+    every cycle. On API error, falls back to stale cache when available.
+    """
+    cache = _load_cache(DETAILS_CACHE)
+    entry = cache.get(place_id)
+    if entry:
+        age = time.time() - entry.get("fetched_at", 0)
+        if age < DETAILS_TTL_SECONDS:
+            logger.info(f"places details: cache hit for {place_id} (age {int(age // 60)}min)")
+            return entry.get("payload")
+
     api_key = os.getenv(API_KEY_ENV, "").strip()
     if not api_key:
-        return None
+        return entry.get("payload") if entry else None
     try:
         r = requests.get(
             f"https://places.googleapis.com/v1/places/{place_id}",
@@ -110,9 +131,16 @@ def get_place_details(place_id: str) -> Optional[dict]:
             timeout=15,
         )
         r.raise_for_status()
-        return r.json()
+        payload = r.json()
+        cache[place_id] = {"fetched_at": time.time(), "payload": payload}
+        _save_cache(cache, DETAILS_CACHE)
+        logger.info(f"places details: fetched + cached fresh for {place_id}")
+        return payload
     except Exception as e:
         logger.exception(f"places details failed for {place_id}: {e}")
+        if entry:
+            logger.warning(f"places details: serving stale cache for {place_id} after error")
+            return entry.get("payload")
         return None
 
 
