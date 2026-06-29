@@ -116,7 +116,8 @@ APPS = [
         "tagline": "Live video shopping",
         "ios_id": "6451351288",
         "android_id": "com.collektr.stream",
-        "ios_url":     "https://apps.apple.com/us/app/collektr-live-video-shopping/id6451351288",
+        "storefront": "my",  # Malaysia-based company — pull iOS rating/reviews/rank from the MY store
+        "ios_url":     "https://apps.apple.com/my/app/collektr-live-video-shopping/id6451351288",
         "android_url": "https://play.google.com/store/apps/details?id=com.collektr.stream&hl=en_US",
         "insight_kind": "good",
     },
@@ -124,11 +125,15 @@ APPS = [
 
 
 # ─── Apple iTunes API ────────────────────────────────────────────────────
-def _fetch_ios(app_id: str) -> Optional[dict]:
-    """iTunes lookup — totally free, no auth, returns rating + count + version."""
+def _fetch_ios(app_id: str, storefront: str = "us") -> Optional[dict]:
+    """iTunes lookup — totally free, no auth, returns rating + count + version.
+
+    `storefront` is the two-letter App Store country code (default "us"); set it
+    per-app when ratings/reviews should come from a specific regional store.
+    """
     try:
         r = requests.get(
-            f"https://itunes.apple.com/lookup?id={app_id}&country=us",
+            f"https://itunes.apple.com/lookup?id={app_id}&country={storefront}",
             timeout=15,
         )
         r.raise_for_status()
@@ -155,7 +160,7 @@ def _fetch_ios(app_id: str) -> Optional[dict]:
         return None
 
 
-def _fetch_ios_reviews(app_id: str, max_pages: int = 10) -> list[dict]:
+def _fetch_ios_reviews(app_id: str, storefront: str = "us", max_pages: int = 10) -> list[dict]:
     """
     RSS feed — most-recent reviews. Pulls up to `max_pages` pages (~50 each)
     so the recent-reviews distribution is a meaningful sample. iOS exposes no
@@ -170,7 +175,7 @@ def _fetch_ios_reviews(app_id: str, max_pages: int = 10) -> list[dict]:
     for page in range(1, max_pages + 1):
         try:
             r = requests.get(
-                f"https://itunes.apple.com/us/rss/customerreviews/page={page}"
+                f"https://itunes.apple.com/{storefront}/rss/customerreviews/page={page}"
                 f"/id={app_id}/sortby=mostrecent/json",
                 timeout=15,
             )
@@ -212,14 +217,15 @@ _RANK_CHART_LABEL = "Top Free"
 _RANK_LIMIT = 200
 
 
-def _fetch_chart(genre_id: str, cache: dict) -> list[str]:
+def _fetch_chart(genre_id: str, cache: dict, storefront: str = "us") -> list[str]:
     """Ordered list of app IDs in a genre's Top Free chart. Cached per scrape cycle."""
-    if genre_id in cache:
-        return cache[genre_id]
+    cache_key = f"{storefront}:{genre_id}"
+    if cache_key in cache:
+        return cache[cache_key]
     ids: list[str] = []
     try:
         r = requests.get(
-            f"https://itunes.apple.com/us/rss/{_RANK_CHART}"
+            f"https://itunes.apple.com/{storefront}/rss/{_RANK_CHART}"
             f"/limit={_RANK_LIMIT}/genre={genre_id}/json",
             timeout=15,
         )
@@ -232,12 +238,12 @@ def _fetch_chart(genre_id: str, cache: dict) -> list[str]:
         ids = [i for i in ids if i]
     except Exception as e:
         logger.warning(f"chart fetch failed for genre {genre_id}: {e}")
-    cache[genre_id] = ids
+    cache[cache_key] = ids
     return ids
 
 
 def _fetch_chart_rank(
-    app_id: str, genre_ids: list, genre_names: list, cache: dict
+    app_id: str, genre_ids: list, genre_names: list, cache: dict, storefront: str = "us"
 ) -> Optional[dict]:
     """
     Best (lowest) verified rank for an app across every App Store genre it
@@ -250,7 +256,7 @@ def _fetch_chart_rank(
     id_to_name = dict(zip(genre_ids, genre_names or []))
     best = None
     for gid in genre_ids:
-        ids = _fetch_chart(str(gid), cache)
+        ids = _fetch_chart(str(gid), cache, storefront)
         if app_id in ids:
             rank = ids.index(app_id) + 1
             if best is None or rank < best["rank"]:
@@ -264,10 +270,10 @@ def _fetch_chart_rank(
 
 
 # ─── Google Play (via google-play-scraper) ───────────────────────────────
-def _fetch_android(package_name: str) -> Optional[dict]:
+def _fetch_android(package_name: str, storefront: str = "us") -> Optional[dict]:
     try:
         from google_play_scraper import app as gps_app  # noqa: WPS433
-        d = gps_app(package_name, lang="en", country="us")
+        d = gps_app(package_name, lang="en", country=storefront)
         # `histogram` is [count_1★, count_2★, count_3★, count_4★, count_5★]
         hist = d.get("histogram") or []
         # Normalize to {"5": n, "4": n, ...} dict for renderer's distribution code
@@ -292,11 +298,11 @@ def _fetch_android(package_name: str) -> Optional[dict]:
         return None
 
 
-def _fetch_android_reviews(package_name: str, n: int = 4) -> list[dict]:
+def _fetch_android_reviews(package_name: str, storefront: str = "us", n: int = 4) -> list[dict]:
     try:
         from google_play_scraper import reviews as gps_reviews, Sort  # noqa: WPS433
         result, _ = gps_reviews(
-            package_name, lang="en", country="us", count=n, sort=Sort.NEWEST
+            package_name, lang="en", country=storefront, count=n, sort=Sort.NEWEST
         )
         out = []
         for r in result:
@@ -327,10 +333,11 @@ def scrape_all_apps() -> dict:
     out_apps = {}
     chart_cache: dict = {}  # genre_id -> ordered app-id list, shared across this cycle
     for app in APPS:
-        ios_data = _fetch_ios(app["ios_id"]) if app.get("ios_id") else None
-        android_data = _fetch_android(app["android_id"]) if app.get("android_id") else None
-        ios_reviews = _fetch_ios_reviews(app["ios_id"]) if ios_data else []
-        android_reviews = _fetch_android_reviews(app["android_id"]) if android_data else []
+        storefront = app.get("storefront", "us")
+        ios_data = _fetch_ios(app["ios_id"], storefront) if app.get("ios_id") else None
+        android_data = _fetch_android(app["android_id"], storefront) if app.get("android_id") else None
+        ios_reviews = _fetch_ios_reviews(app["ios_id"], storefront) if ios_data else []
+        android_reviews = _fetch_android_reviews(app["android_id"], storefront) if android_data else []
 
         # Verified App Store chart rank (None when outside the top 200).
         rank = (
@@ -339,6 +346,7 @@ def scrape_all_apps() -> dict:
                 ios_data.get("genre_ids") or [],
                 ios_data.get("genre_names") or [],
                 chart_cache,
+                storefront,
             )
             if ios_data
             else None
