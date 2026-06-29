@@ -110,6 +110,16 @@ APPS = [
         "android_url": "https://play.google.com/store/apps/details?id=com.prophetxsweepstake",
         "insight_kind": "good",
     },
+    {
+        "key": "collektr",
+        "name": "Collektr",
+        "tagline": "Live video shopping",
+        "ios_id": "6451351288",
+        "android_id": "com.collektr.stream",
+        "ios_url":     "https://apps.apple.com/us/app/collektr-live-video-shopping/id6451351288",
+        "android_url": "https://play.google.com/store/apps/details?id=com.collektr.stream&hl=en_US",
+        "insight_kind": "good",
+    },
 ]
 
 
