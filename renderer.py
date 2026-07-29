@@ -1180,25 +1180,26 @@ body {
 .team-h { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-faint); font-weight: 700; margin-bottom: 4px; }
 /* rich one-row games */
 .team-schedule { margin-bottom: 14px; }
-.next-half { width: 50%; }
-@media (max-width: 860px) { .next-half { width: 100%; } }
-.g-next, .g-prev { display: grid; align-items: baseline; gap: 8px; padding: 3px 0; border-bottom: 1px solid var(--line-soft); font-size: 11.5px; line-height: 1.3; }
-/* Next games — compact, fits in the left half; columns align across rows */
-.g-next { grid-template-columns: 62px minmax(84px,1fr) minmax(88px,auto) auto auto; column-gap: 10px; }
-/* Previous games — full width: date, matchup, opp, result, shorthand stat line */
-.g-prev { grid-template-columns: 84px minmax(110px,150px) minmax(120px,150px) 58px minmax(0,1fr); }
+.g-next, .g-prev { display: grid; align-items: baseline; column-gap: 12px; padding: 3px 0; border-bottom: 1px solid var(--line-soft); font-size: 11.5px; line-height: 1.3; }
+/* Identical first three columns (date · opponent · record) in BOTH tables so the
+   opponent names line up and the records line up across Next and Previous.
+   justify-content:start keeps Next packed to the left ~half (no track stretching). */
+.g-next { grid-template-columns: 82px 145px 130px auto minmax(0,120px) auto; justify-content: start; }
+.g-prev { grid-template-columns: 82px 145px 130px 56px minmax(0,1fr); }
 .g-next:last-child, .g-prev:last-child { border-bottom: 0; }
 .g-next .gd, .g-prev .gd { color: var(--ink-faint); white-space: nowrap; }
 .gm { color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .gopp { color: var(--ink-soft); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .gwx { color: var(--ink-soft); font-size: 11px; white-space: nowrap; }
-.g-next .gtv2 { display: none; }   /* TV omitted in the condensed half-width next table */
+.gtv2 { color: var(--ink-faint); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .g-next .gt { color: var(--ink-soft); font-size: 11px; white-space: nowrap; text-align: right; }
 .g-prev .gr { font-weight: 700; text-align: left; }
 .g-prev .gr.win { color: var(--good); } .g-prev .gr.loss { color: var(--bad); }
 .ghl { color: var(--ink-soft); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 @media (max-width: 720px) {
-  .g-prev { grid-template-columns: 70px 1fr 54px; }
+  .g-next { grid-template-columns: 68px 1fr auto auto; }
+  .g-next .gopp, .g-next .gtv2 { display: none; }
+  .g-prev { grid-template-columns: 68px 1fr 52px; }
   .g-prev .gopp, .g-prev .ghl { display: none; }
 }
 .empty-row { padding: 6px 0; border-bottom: 1px solid var(--line-soft); color: var(--line); font-size: 12px; }
