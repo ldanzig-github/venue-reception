@@ -1184,7 +1184,9 @@ body {
 /* Identical first three columns (date · opponent · record) in BOTH tables so the
    opponent names line up and the records line up across Next and Previous.
    justify-content:start keeps Next packed to the left ~half (no track stretching). */
-.g-next { grid-template-columns: 82px 145px 130px auto minmax(0,120px) auto; justify-content: start; }
+/* All Next columns are fixed width so weather, TV and time line up across every
+   row (each row is its own grid, so auto tracks would drift row-to-row). */
+.g-next { grid-template-columns: 82px 145px 130px 100px 168px auto; justify-content: start; }
 .g-prev { grid-template-columns: 82px 145px 130px 56px minmax(0,1fr); }
 .g-next:last-child, .g-prev:last-child { border-bottom: 0; }
 .g-next .gd, .g-prev .gd { color: var(--ink-faint); white-space: nowrap; }
@@ -1192,7 +1194,7 @@ body {
 .gopp { color: var(--ink-soft); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .gwx { color: var(--ink-soft); font-size: 11px; white-space: nowrap; }
 .gtv2 { color: var(--ink-faint); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.g-next .gt { color: var(--ink-soft); font-size: 11px; white-space: nowrap; text-align: right; }
+.g-next .gt { color: var(--ink-soft); font-size: 11px; white-space: nowrap; text-align: left; }
 .g-prev .gr { font-weight: 700; text-align: left; }
 .g-prev .gr.win { color: var(--good); } .g-prev .gr.loss { color: var(--bad); }
 .ghl { color: var(--ink-soft); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
