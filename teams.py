@@ -117,7 +117,7 @@ def _jsonld_events(html: str) -> list[dict]:
     return out
 
 
-def _fetch_venue_events(cfg: dict, team_name: str, limit: int = 5) -> list[dict]:
+def _fetch_venue_events(cfg: dict, team_name: str, limit: int = 4) -> list[dict]:
     """Upcoming NON-team events at the home venue, merged from ticketing JSON-LD.
 
     Ticketmaster (all event types) is primary; Songkick (concerts) is merged for
@@ -563,7 +563,7 @@ def _fetch_futures(cfg: dict) -> dict:
     }
 
 
-def _fetch_news(sport_path: str, team_name: str, espn_id: str, limit: int = 5) -> list[dict]:
+def _fetch_news(sport_path: str, team_name: str, espn_id: str, limit: int = 4) -> list[dict]:
     """Recent stories, preferring ones about this team, falling back to league news."""
     d = _get(f"https://site.api.espn.com/apis/site/v2/sports/{sport_path}/news?limit=50")
     articles = (d or {}).get("articles") or []
@@ -583,7 +583,9 @@ def _fetch_news(sport_path: str, team_name: str, espn_id: str, limit: int = 5) -
         return False
 
     team_arts = [a for a in articles if _is_team(a)]
-    chosen = (team_arts or articles)[:limit]
+    # Team stories first, then top up with the latest league news to reach `limit`.
+    other = [a for a in articles if a not in team_arts]
+    chosen = (team_arts + other)[:limit]
     out = []
     for a in chosen:
         pub = a.get("published") or ""
@@ -735,7 +737,7 @@ def _build_team(cfg: dict) -> dict:
     )
     attendance = _attendance_series(games)
     current_avg = round(sum(p["v"] for p in attendance) / len(attendance)) if attendance else None
-    last_home = attendance[-1] if attendance else None
+    last3_home = attendance[-3:][::-1] if attendance else []   # most recent first
     attendance_by_year = _attendance_by_year(cfg, _SEASON, current_avg)
     live = _fetch_live(cfg["sport_path"], cfg["espn_abbr"])
     venue_events = _fetch_venue_events(cfg, cfg["name"])
@@ -788,7 +790,7 @@ def _build_team(cfg: dict) -> dict:
             "games_ahead": games_ahead,
             "attendance_avg": current_avg,
             "attendance_by_year": attendance_by_year,
-            "attendance_last_home": last_home,   # {"d": iso, "v": count}
+            "attendance_last3": last3_home,   # [{"d": iso, "v": count}] most-recent first
         },
         "news": news,
     }

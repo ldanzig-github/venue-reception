@@ -100,17 +100,18 @@ def _sparkline(series, kind="count", width=120, height=28):
     </svg>'''
 
 
-def _attendance_bars(series, avg_line=None, width=560, height=96):
+def _attendance_bars(series, avg_line=None, width=320, height=150):
     """Vertical bars of avg attendance/game by season; current year highlighted.
 
-    The 10-yr average is drawn as a bare dashed reference line — its value is
-    already stated in the caption above, so no on-chart label (avoids overlap).
+    A narrow viewBox (close to the tile's own width) keeps the uniform-scale
+    small, so bars render tall and labels stay legible. The 10-yr average is a
+    bare dashed reference line — its value is in the caption above, no label.
     """
     if not series:
         return '<div class="gauge-empty">no attendance data</div>'
     vals = [s["avg"] for s in series]
     hi = max(vals) * 1.05
-    pad_t, pad_b, pad_x = 14, 15, 4
+    pad_t, pad_b, pad_x = 16, 18, 4
     iw, ih = width - pad_x * 2, height - pad_t - pad_b
     n = len(series)
     slot = iw / n
@@ -621,7 +622,7 @@ def _team_block(team):
         url = n.get("url") or "#"
         news_items += (f'<a href="{escape(url)}" target="_blank" rel="noopener">'
                        f'<span class="nd">{escape(n.get("published",""))}</span>{escape(n.get("headline",""))}</a>')
-    news_items += '<div class="empty-row">—</div>' * max(0, 5 - len(news))  # always 5 rows
+    news_items += '<div class="empty-row">—</div>' * max(0, 4 - len(news))  # keep 4 rows
     news_html = f'<div class="team-news"><div class="team-h">Recent news</div>{news_items}</div>'
 
     # ── Non-team events at the home venue ──
@@ -634,7 +635,7 @@ def _team_block(team):
         ve_items += (f'<a class="ve" href="{escape(url)}" target="_blank" rel="noopener">'
                      f'<span class="ve-date">{escape(when)}</span>'
                      f'<span class="ve-name">{escape(e.get("name",""))}</span></a>')
-    ve_items += '<div class="empty-row">—</div>' * max(0, 5 - len(events))  # always 5 rows
+    ve_items += '<div class="empty-row">—</div>' * max(0, 4 - len(events))  # keep 4 rows
     venue_events_html = (
         f'<div class="venue-events"><div class="team-h">Also at {escape(venue_name)} · non-Rangers</div>{ve_items}</div>'
     )
@@ -662,15 +663,16 @@ def _team_block(team):
     att_current = charts.get("attendance_avg")
     prior = [r["avg"] for r in att_years if not r.get("is_current")]
     ten_yr_avg = round(sum(prior) / len(prior)) if prior else None
-    last_home = charts.get("attendance_last_home") or {}
-    last_home_txt = ""
-    if last_home.get("v"):
-        d_iso = last_home.get("d", "")
+    def _fmt_when(iso):
         try:
-            when = datetime.fromisoformat(d_iso).strftime("%b %-d")
+            return datetime.fromisoformat(iso).strftime("%b %-d")
         except Exception:
-            when = d_iso
-        last_home_txt = f'Last home game: {last_home["v"]:,} ({when})'
+            return iso
+    last3 = charts.get("attendance_last3") or []
+    last3_txt = ""
+    if last3:
+        pieces = [f'{g["v"]:,} ({_fmt_when(g.get("d",""))})' for g in last3 if g.get("v")]
+        last3_txt = "Last 3 home games: " + " · ".join(pieces)
     att_cell = ""
     if att_years:
         vs_txt = ""
@@ -682,7 +684,7 @@ def _team_block(team):
             <div class="tc-val">{att_current:,}</div>
             <div class="tc-sub">{escape(vs_txt)}</div>
             {_attendance_bars(att_years, avg_line=ten_yr_avg)}
-            <div class="tc-sub">{escape(last_home_txt)}</div>
+            <div class="tc-sub">{escape(last3_txt)}</div>
           </div>"""
     ahead_last = ahead_series[-1]["v"] if ahead_series else None
     if ahead_last is None:
