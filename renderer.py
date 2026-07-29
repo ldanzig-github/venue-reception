@@ -470,6 +470,81 @@ def _app_block(meta, data):
 
 
 # ─── hero KPI strip ────────────────────────────────────────────────────────
+def _team_block(team):
+    """Render one team's card: record, odds, schedule, standings, news."""
+    name = team.get("name") or "—"
+    record = team.get("record") or "—"
+    standing = team.get("standing_summary") or ""
+    sub = " · ".join(filter(None, [team.get("league"), standing]))
+    odds = team.get("odds") or {}
+
+    def _odds_box(label, value, sub_txt="", cls=""):
+        return (f'<div class="odds-box {cls}"><div class="ol">{escape(label)}</div>'
+                f'<div class="ov">{escape(value or "—")}</div>'
+                f'<div class="os">{escape(sub_txt)}</div></div>')
+
+    odds_html = "".join([
+        _odds_box("Make Playoffs", odds.get("playoff_pct"), "ESPN model prob.", "pct"),
+        _odds_box("Win AL West", odds.get("division"), "moneyline"),
+        _odds_box(odds.get("pennant_label") or "Win League", odds.get("pennant"), "moneyline"),
+        _odds_box("Win World Series", odds.get("world_series"), "moneyline"),
+    ])
+
+    def _next_game(g):
+        return (f'<div class="game"><span class="gd">{escape(g.get("date",""))}</span>'
+                f'<span class="go">{escape(g.get("home_away",""))} {escape(g.get("opponent",""))}</span>'
+                f'<span class="gt">{escape(g.get("time",""))}</span></div>')
+
+    def _prev_game(g):
+        res = g.get("result") or ""
+        rcls = "win" if res.startswith("W") else ("loss" if res.startswith("L") else "")
+        return (f'<div class="game"><span class="gd">{escape(g.get("date",""))}</span>'
+                f'<span class="go">{escape(g.get("home_away",""))} {escape(g.get("opponent",""))}</span>'
+                f'<span class="gr {rcls}">{escape(res)}</span></div>')
+
+    next_html = "".join(_next_game(g) for g in (team.get("next_games") or [])) or '<div class="game"><span class="go">No upcoming games</span></div>'
+    prev_html = "".join(_prev_game(g) for g in (team.get("previous_games") or [])) or '<div class="game"><span class="go">No recent games</span></div>'
+
+    rows = ""
+    for r in (team.get("division_table") or []):
+        me = " class=\"me\"" if r.get("is_team") else ""
+        rows += (f'<tr{me}><td>{escape(r.get("name",""))}</td>'
+                 f'<td>{escape(str(r.get("wins","")))}</td><td>{escape(str(r.get("losses","")))}</td>'
+                 f'<td>{escape(str(r.get("pct","")))}</td><td>{escape(str(r.get("gb","")))}</td></tr>')
+    stand_html = (f'<table class="stand"><thead><tr><th>{escape(team.get("division_name",""))}</th>'
+                  f'<th>W</th><th>L</th><th>PCT</th><th>GB</th></tr></thead><tbody>{rows}</tbody></table>')
+
+    news_items = ""
+    for n in (team.get("news") or []):
+        url = n.get("url") or "#"
+        news_items += (f'<a href="{escape(url)}" target="_blank" rel="noopener">'
+                       f'<span class="nd">{escape(n.get("published",""))}</span>{escape(n.get("headline",""))}</a>')
+    news_html = f'<div class="team-news"><div class="team-h">Recent news</div>{news_items}</div>' if news_items else ""
+
+    return f"""<article class="card">
+    <header class="card-h">
+      <div class="card-title">
+        <h3>{escape(name)}</h3>
+        <span class="status good" title="Overall record">{escape(record)}</span>
+      </div>
+      <div class="card-sub">{escape(sub)}</div>
+    </header>
+    <div class="card-body" style="display:block">
+      <div class="team-odds">{odds_html}</div>
+      <div class="team-cols">
+        <div>
+          <div class="team-h">Next 3 games</div>{next_html}
+          <div class="team-h" style="margin-top:12px">Previous 3 games</div>{prev_html}
+        </div>
+        <div>
+          <div class="team-h">Division standings</div>{stand_html}
+        </div>
+      </div>
+      {news_html}
+    </div>
+  </article>"""
+
+
 def _hero_strip(summary, label_singular):
     if not summary:
         return ""
@@ -660,14 +735,24 @@ def render(data: dict) -> str:
         _app_block(meta, apps_data.get(meta["key"], {}))
         for meta in sorted(APP_META, key=_app_review_count)
     )
+    # Teams tab — ordered by the config list in teams.py.
+    from teams import TEAMS as TEAM_META
+    teams_data = data.get("teams") or {}
+    teams_html = "\n\n  ".join(
+        _team_block(teams_data[m["key"]])
+        for m in TEAM_META if teams_data.get(m["key"])
+    ) or '<div class="empty-msg">No team data yet — populates on the next scrape cycle.</div>'
+
     return (_TEMPLATE
         .replace("{{LAST_SCRAPE}}", escape(last_scrape))
         .replace("{{HERO_VENUES}}", _hero_strip(summary.get("venues"), "venue"))
         .replace("{{HERO_APPS}}",   _hero_strip(summary.get("apps"),   "app"))
         .replace("{{VENUES_COUNT}}", str(len(VENUE_META)))
         .replace("{{APPS_COUNT}}", str(len(APP_META)))
+        .replace("{{TEAMS_COUNT}}", str(len(teams_data)))
         .replace("{{VENUES}}", venues_html)
         .replace("{{APPS}}", apps_html)
+        .replace("{{TEAMS}}", teams_html)
         .replace("{{FEED}}", _feed_block(data)))
 
 
@@ -890,6 +975,37 @@ body {
 .chip.warn { background: #fef3c7; border-color: #fde68a; color: #92400e; }
 .chip.bad  { background: #fef2f2; border-color: #fecaca; color: #991b1b; }
 
+/* ── teams tab ── */
+.team-odds { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.odds-box {
+  flex: 1 1 120px; min-width: 110px; background: var(--card);
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
+}
+.odds-box .ol { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-faint); font-weight: 700; }
+.odds-box .ov { font-size: 18px; font-weight: 800; color: var(--ink); margin-top: 2px; }
+.odds-box .os { font-size: 9.5px; color: var(--ink-faint); }
+.odds-box.pct .ov { color: var(--good); }
+.team-cols { display: grid; grid-template-columns: 1fr 1.2fr; gap: 16px; }
+@media (max-width: 720px) { .team-cols { grid-template-columns: 1fr; } }
+.team-h { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-faint); font-weight: 700; margin-bottom: 6px; }
+.game { display: flex; align-items: baseline; gap: 6px; padding: 5px 0; border-bottom: 1px solid var(--line-soft); font-size: 12px; }
+.game:last-child { border-bottom: 0; }
+.game .gd { color: var(--ink-faint); min-width: 78px; }
+.game .go { flex: 1; color: var(--ink); }
+.game .gr { font-weight: 700; }
+.game .gr.win { color: var(--good); } .game .gr.loss { color: var(--bad); }
+.game .gt { color: var(--ink-soft); font-size: 11px; }
+table.stand { width: 100%; border-collapse: collapse; font-size: 12px; }
+table.stand th { text-align: right; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-faint); padding: 3px 6px; border-bottom: 1px solid var(--line); }
+table.stand th:first-child { text-align: left; }
+table.stand td { text-align: right; padding: 4px 6px; border-bottom: 1px solid var(--line-soft); color: var(--ink-soft); }
+table.stand td:first-child { text-align: left; color: var(--ink); }
+table.stand tr.me td { background: #eef6ff; font-weight: 700; color: var(--ink); }
+.team-news { margin-top: 14px; }
+.team-news a { display: block; padding: 6px 0; border-bottom: 1px solid var(--line-soft); font-size: 12.5px; color: var(--ink); text-decoration: none; }
+.team-news a:hover { color: #1d4ed8; }
+.team-news .nd { color: var(--ink-faint); font-size: 10.5px; margin-right: 6px; }
+
 /* ── reviews column ── */
 .reviews-col { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .reviews-h {
@@ -994,6 +1110,7 @@ body {
   <nav class="tabs" role="tablist">
     <button class="tab" data-tab="venues" role="tab">Venues<span class="ct">{{VENUES_COUNT}}</span></button>
     <button class="tab" data-tab="apps"   role="tab">Apps<span class="ct">{{APPS_COUNT}}</span></button>
+    <button class="tab" data-tab="teams"  role="tab">Teams<span class="ct">{{TEAMS_COUNT}}</span></button>
     <button class="tab" data-tab="feed"   role="tab">Feed</button>
   </nav>
 
@@ -1007,6 +1124,10 @@ body {
     {{APPS}}
   </section>
 
+  <section id="panel-teams" class="panel">
+    {{TEAMS}}
+  </section>
+
   <section id="panel-feed" class="panel">
     {{FEED}}
   </section>
@@ -1016,7 +1137,7 @@ body {
 <script>
 document.getElementById('now').textContent = new Date().toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 function setTab(name) {
-  if (!['venues','apps','feed'].includes(name)) name = 'venues';
+  if (!['venues','apps','teams','feed'].includes(name)) name = 'venues';
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
   document.querySelectorAll('.panel').forEach(p => p.classList.toggle('hidden', p.id !== 'panel-' + name));
   history.replaceState(null, '', '#' + name);

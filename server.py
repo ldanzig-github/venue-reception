@@ -40,6 +40,7 @@ def _do_scrape_cycle():
     try:
         from scraper import scrape_all_venues
         from app_store import scrape_all_apps
+        from teams import scrape_all_teams
         from renderer import write_dashboard
         import trends
 
@@ -47,13 +48,16 @@ def _do_scrape_cycle():
         venue_data = scrape_all_venues(headless=True)
         log.info("venue scrape complete; starting app store scrape")
         app_data = scrape_all_apps()
-        log.info("app store scrape complete")
+        log.info("app store scrape complete; starting teams fetch")
+        team_data = scrape_all_teams()
+        log.info("teams fetch complete")
 
         # Merge into a single dict before trend computation.
         data = {
             "last_scrape": venue_data.get("last_scrape") or app_data.get("last_scrape"),
             "venues": venue_data.get("venues") or {},
             "apps":   app_data.get("apps")   or {},
+            "teams":  team_data.get("teams")  or {},
         }
 
         # Compute trend deltas vs history BEFORE we append the current snapshot,
