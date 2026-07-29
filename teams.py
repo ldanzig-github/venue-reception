@@ -214,6 +214,7 @@ def _parse_event(ev: dict, abbr: str) -> Optional[dict]:
         "date": date_str,
         "time": time_str,
         "opponent": opp_name,
+        "opponent_abbr": (them.get("team") or {}).get("abbreviation"),
         "home_away": "vs" if home_away == "home" else "@",
         "home_away_raw": home_away,
         "venue": (comp.get("venue") or {}).get("fullName"),
@@ -604,6 +605,84 @@ def _pct_to_float(pct_str) -> Optional[float]:
         return None
 
 
+_DIV_SHORT = {
+    "American League East": "AL East", "American League West": "AL West",
+    "American League Central": "AL Central", "National League East": "NL East",
+    "National League West": "NL West", "National League Central": "NL Central",
+}
+
+_ORDINAL = {1: "1st", 2: "2nd", 3: "3rd", 4: "4th", 5: "5th"}
+
+
+def _all_standings_lookup(sport_path: str) -> dict:
+    """Map every team abbr → {record, div, rank} for opponent context."""
+    league = sport_path.split("/")[-1]
+    d = _get(f"https://site.api.espn.com/apis/v2/sports/baseball/{league}/standings?level=3&season={_SEASON}")
+    out = {}
+    if not d:
+        return out
+
+    def _stat(entry, name):
+        for s in (entry.get("stats") or []):
+            if s.get("name") == name:
+                return s.get("displayValue")
+        return None
+
+    def walk(node):
+        if isinstance(node, dict):
+            nm = node.get("name")
+            entries = (node.get("standings") or {}).get("entries") or node.get("entries")
+            if nm and entries and any(k in str(nm) for k in ("East", "West", "Central")):
+                # entries are already ranked in standings order
+                for i, e in enumerate(entries):
+                    ab = (e.get("team") or {}).get("abbreviation")
+                    if ab:
+                        out[ab] = {
+                            "record": f"{_stat(e, 'wins')}-{_stat(e, 'losses')}",
+                            "div": _DIV_SHORT.get(nm, nm),
+                            "rank": _ORDINAL.get(i + 1, f"{i+1}th"),
+                        }
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    walk(d)
+    return out
+
+
+def _fetch_game_meta(sport_path: str, event_id: str) -> dict:
+    """Weather forecast + recap highlight for one game, from its summary."""
+    if not event_id:
+        return {}
+    d = _get(f"https://site.api.espn.com/apis/site/v2/sports/{sport_path}/summary?event={event_id}")
+    if not d:
+        return {}
+    meta = {}
+    wx = (d.get("gameInfo") or {}).get("weather") or {}
+    if wx.get("temperature") is not None:
+        meta["weather"] = {
+            "temp": wx.get("temperature"),
+            "precip": wx.get("precipitation"),
+        }
+    art = d.get("article") or {}
+    highlight = art.get("description") or art.get("headline")
+    if highlight:
+        # Strip the leading dateline dash and trim to a compact one-liner.
+        highlight = re.sub(r"^\s*[—–-]\s*", "", highlight).strip()
+        meta["highlight"] = highlight
+    return meta
+
+
+def _weather_icon(precip) -> str:
+    try:
+        p = float(precip)
+    except (TypeError, ValueError):
+        return "🌡️"
+    return "🌧️" if p >= 50 else ("⛅" if p >= 20 else "☀️")
+
+
 def _build_team(cfg: dict) -> dict:
     core = _fetch_record_and_standing(cfg["sport_path"], cfg["espn_abbr"])
     games = _team_games(cfg["sport_path"], cfg["espn_abbr"])
@@ -618,9 +697,27 @@ def _build_team(cfg: dict) -> dict:
     )
     attendance = _attendance_series(games)
     current_avg = round(sum(p["v"] for p in attendance) / len(attendance)) if attendance else None
+    last_home = attendance[-1] if attendance else None
     attendance_by_year = _attendance_by_year(cfg, _SEASON, current_avg)
     live = _fetch_live(cfg["sport_path"], cfg["espn_abbr"])
     venue_events = _fetch_venue_events(cfg, cfg["name"])
+
+    # Enrich the schedule: opponent standing + weather for upcoming games,
+    # recap highlights for completed games.
+    sport_path = cfg["sport_path"]
+    standings = _all_standings_lookup(sport_path)
+    for g in schedule["next"]:
+        opp = standings.get(g.get("opponent_abbr")) or {}
+        g["opp_record"] = opp.get("record")
+        g["opp_div"] = opp.get("div")
+        g["opp_rank"] = opp.get("rank")
+        wm = _fetch_game_meta(sport_path, g.get("id"))
+        wx = wm.get("weather")
+        if wx:
+            g["weather"] = {"icon": _weather_icon(wx.get("precip")), **wx}
+    for g in schedule["previous"]:
+        g["highlight"] = _fetch_game_meta(sport_path, g.get("id")).get("highlight")
+
     return {
         "name": core.get("name") or cfg["name"],
         "league": cfg["league"],
@@ -650,6 +747,7 @@ def _build_team(cfg: dict) -> dict:
             "games_ahead": games_ahead,
             "attendance_avg": current_avg,
             "attendance_by_year": attendance_by_year,
+            "attendance_last_home": last_home,   # {"d": iso, "v": count}
         },
         "news": news,
     }

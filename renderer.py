@@ -569,21 +569,37 @@ def _team_block(team):
     ])
 
     def _next_game(g):
-        tv = g.get("tv")
-        tv_html = f'<span class="gtv">📺 {escape(tv)}</span>' if tv else ""
-        return (f'<div class="game"><span class="gd">{escape(g.get("date",""))}</span>'
-                f'<span class="go">{escape(g.get("home_away",""))} {escape(g.get("opponent",""))}{tv_html}</span>'
+        opp_bits = " · ".join(filter(None, [
+            g.get("opp_record"),
+            " ".join(filter(None, [g.get("opp_rank"), g.get("opp_div")])),
+        ]))
+        wx = g.get("weather")
+        wx_html = ""
+        if wx:
+            precip = wx.get("precip")
+            wx_html = f'{wx.get("icon","")} {wx.get("temp","")}°F'
+            if precip not in (None, "", 0):
+                wx_html += f' · {precip}%'
+        return (f'<div class="g-next">'
+                f'<span class="gd">{escape(g.get("date",""))}</span>'
+                f'<span class="gm">{escape(g.get("home_away",""))} {escape(g.get("opponent",""))}</span>'
+                f'<span class="gopp">{escape(opp_bits)}</span>'
+                f'<span class="gwx">{escape(wx_html)}</span>'
+                f'<span class="gtv2">{escape(g.get("tv") or "")}</span>'
                 f'<span class="gt">{escape(g.get("time",""))}</span></div>')
 
     def _prev_game(g):
         res = g.get("result") or ""
         rcls = "win" if res.startswith("W") else ("loss" if res.startswith("L") else "")
-        return (f'<div class="game"><span class="gd">{escape(g.get("date",""))}</span>'
-                f'<span class="go">{escape(g.get("home_away",""))} {escape(g.get("opponent",""))}</span>'
-                f'<span class="gr {rcls}">{escape(res)}</span></div>')
+        hl = g.get("highlight") or ""
+        return (f'<div class="g-prev">'
+                f'<span class="gd">{escape(g.get("date",""))}</span>'
+                f'<span class="gm">{escape(g.get("home_away",""))} {escape(g.get("opponent",""))}</span>'
+                f'<span class="gr {rcls}">{escape(res)}</span>'
+                f'<span class="ghl" title="{escape(hl)}">{escape(hl)}</span></div>')
 
-    next_html = "".join(_next_game(g) for g in (team.get("next_games") or [])) or '<div class="game"><span class="go">No upcoming games</span></div>'
-    prev_html = "".join(_prev_game(g) for g in (team.get("previous_games") or [])) or '<div class="game"><span class="go">No recent games</span></div>'
+    next_html = "".join(_next_game(g) for g in (team.get("next_games") or [])) or '<div class="g-next"><span class="gm">No upcoming games</span></div>'
+    prev_html = "".join(_prev_game(g) for g in (team.get("previous_games") or [])) or '<div class="g-prev"><span class="gm">No recent games</span></div>'
 
     rows = ""
     for r in (team.get("division_table") or []):
@@ -638,6 +654,15 @@ def _team_block(team):
     att_current = charts.get("attendance_avg")
     prior = [r["avg"] for r in att_years if not r.get("is_current")]
     ten_yr_avg = round(sum(prior) / len(prior)) if prior else None
+    last_home = charts.get("attendance_last_home") or {}
+    last_home_txt = ""
+    if last_home.get("v"):
+        d_iso = last_home.get("d", "")
+        try:
+            when = datetime.fromisoformat(d_iso).strftime("%b %-d")
+        except Exception:
+            when = d_iso
+        last_home_txt = f'Last home game: {last_home["v"]:,} ({when})'
     att_cell = ""
     if att_years:
         vs_txt = ""
@@ -645,11 +670,11 @@ def _team_block(team):
             d = att_current - ten_yr_avg
             vs_txt = f'vs 10-yr avg {ten_yr_avg:,} ({"+" if d >= 0 else "−"}{abs(d):,})'
         att_cell = f"""<div class="trend-cell wide">
-            <div class="tc-title">Attendance per game · this year vs last 10</div>
+            <div class="tc-title">Attendance / game · vs last 10 yrs</div>
             <div class="tc-val">{att_current:,}</div>
             <div class="tc-sub">{escape(vs_txt)}</div>
             {_attendance_bars(att_years, avg_line=ten_yr_avg)}
-            <div class="tc-sub">Globe Life Field · avg attendance/game by season</div>
+            <div class="tc-sub">{escape(last_home_txt)}</div>
           </div>"""
     ahead_last = ahead_series[-1]["v"] if ahead_series else None
     if ahead_last is None:
@@ -671,6 +696,10 @@ def _team_block(team):
             <div class="tc-sub">in AL West · dashed = tied for lead</div>
           </div>
           {att_cell}
+          <div class="trend-cell stand-cell">
+            <div class="tc-title">Division standings</div>
+            {stand_html}
+          </div>
         </div>
       </div>"""
 
@@ -686,17 +715,14 @@ def _team_block(team):
       {live_html}
       <div class="team-odds">{odds_html}</div>
       {trends_html}
-      <div class="team-cols">
-        <div>
-          <div class="team-h">Next 3 games</div>{next_html}
-          <div class="team-h" style="margin-top:12px">Previous 3 games</div>{prev_html}
-        </div>
-        <div>
-          <div class="team-h">Division standings</div>{stand_html}
-        </div>
+      <div class="team-schedule">
+        <div class="team-h">Next 3 games</div>{next_html}
+        <div class="team-h" style="margin-top:10px">Previous 3 games</div>{prev_html}
       </div>
-      {venue_events_html}
-      {news_html}
+      <div class="team-bottom">
+        {venue_events_html}
+        {news_html}
+      </div>
     </div>
   </article>"""
 
@@ -1141,17 +1167,29 @@ body {
 .odds-box .ov { font-size: 18px; font-weight: 800; color: var(--ink); margin-top: 2px; }
 .odds-box .os { font-size: 9.5px; color: var(--ink-faint); }
 .odds-box.pct .ov { color: var(--good); }
-.team-cols { display: grid; grid-template-columns: 1.35fr 1fr; gap: 16px; }
-@media (max-width: 720px) { .team-cols { grid-template-columns: 1fr; } }
 .team-h { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-faint); font-weight: 700; margin-bottom: 4px; }
-.game { display: flex; align-items: baseline; gap: 6px; padding: 2px 0; border-bottom: 1px solid var(--line-soft); font-size: 12px; line-height: 1.25; }
-.game:last-child { border-bottom: 0; }
-.game .gd { color: var(--ink-faint); min-width: 78px; }
-.game .go { flex: 1; color: var(--ink); }
-.game .gr { font-weight: 700; }
-.game .gr.win { color: var(--good); } .game .gr.loss { color: var(--bad); }
-.game .gt { color: var(--ink-soft); font-size: 11px; white-space: nowrap; }
-.game .gtv { font-size: 10px; color: var(--ink-faint); margin-left: 6px; white-space: nowrap; }
+/* rich one-row games */
+.team-schedule { margin-bottom: 14px; }
+.g-next, .g-prev { display: grid; align-items: baseline; gap: 8px; padding: 3px 0; border-bottom: 1px solid var(--line-soft); font-size: 12px; line-height: 1.3; }
+.g-next { grid-template-columns: 84px minmax(110px,1.1fr) 1.35fr 0.85fr 1.05fr auto; }
+.g-prev { grid-template-columns: 84px minmax(110px,1fr) 60px 2.6fr; }
+.g-next:last-child, .g-prev:last-child { border-bottom: 0; }
+.g-next .gd, .g-prev .gd { color: var(--ink-faint); white-space: nowrap; }
+.gm { color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gopp { color: var(--ink-soft); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gwx { color: var(--ink-soft); font-size: 11px; white-space: nowrap; }
+.gtv2 { color: var(--ink-faint); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.g-next .gt { color: var(--ink-soft); font-size: 11px; white-space: nowrap; text-align: right; }
+.g-prev .gr { font-weight: 700; text-align: left; }
+.g-prev .gr.win { color: var(--good); } .g-prev .gr.loss { color: var(--bad); }
+.ghl { color: var(--ink-soft); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 720px) {
+  .g-next { grid-template-columns: 70px 1fr auto; }
+  .g-prev { grid-template-columns: 70px 1fr auto; }
+  .g-next .gopp, .g-next .gwx, .g-next .gtv2, .g-prev .ghl { display: none; }
+}
+/* bottom row: venue events + news side by side */
+.team-bottom { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px 24px; align-items: start; }
 /* live score banner */
 .live-banner {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
@@ -1166,10 +1204,11 @@ body {
 .live-meta .bases { letter-spacing: 1px; color: var(--warn); }
 /* season trends */
 .team-trends { margin-bottom: 14px; }
-.trend-grid { display: grid; grid-template-columns: 1fr 1.7fr; gap: 12px; align-items: stretch; }
-@media (max-width: 720px) { .trend-grid { grid-template-columns: 1fr; } }
+.trend-grid { display: grid; grid-template-columns: 1fr 0.95fr 1.35fr; gap: 12px; align-items: stretch; }
+@media (max-width: 860px) { .trend-grid { grid-template-columns: 1fr; } }
 .trend-cell { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: var(--card); text-align: center; display: flex; flex-direction: column; }
-.trend-cell.wide { text-align: left; }
+.trend-cell.wide, .trend-cell.stand-cell { text-align: left; }
+.trend-cell.stand-cell table.stand { margin-top: 5px; }
 .tc-title { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-faint); font-weight: 700; }
 .tc-val { font-size: 17px; font-weight: 800; color: var(--ink); margin: 3px 0; }
 .tc-val.good { color: var(--good); } .tc-val.bad { color: var(--bad); }
@@ -1184,12 +1223,12 @@ table.stand th:first-child { text-align: left; }
 table.stand td { text-align: right; padding: 4px 6px; border-bottom: 1px solid var(--line-soft); color: var(--ink-soft); }
 table.stand td:first-child { text-align: left; color: var(--ink); }
 table.stand tr.me td { background: #eef6ff; font-weight: 700; color: var(--ink); }
-.team-news { margin-top: 14px; }
+.team-news { margin-top: 0; }
 .team-news a { display: block; padding: 6px 0; border-bottom: 1px solid var(--line-soft); font-size: 12.5px; color: var(--ink); text-decoration: none; }
 .team-news a:hover { color: #1d4ed8; }
 .team-news .nd { color: var(--ink-faint); font-size: 10.5px; margin-right: 6px; }
 /* non-team venue events */
-.venue-events { margin-top: 14px; }
+.venue-events { margin-top: 0; }
 .venue-events .ve { display: flex; align-items: baseline; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line-soft); text-decoration: none; }
 .venue-events .ve:hover .ve-name { color: #1d4ed8; }
 .venue-events .ve-date { flex: 0 0 118px; font-size: 11px; color: var(--ink-faint); }
