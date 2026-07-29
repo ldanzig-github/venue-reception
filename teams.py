@@ -59,10 +59,16 @@ TEAMS = [
             "2021": 26052, "2022": 24831, "2023": 31272, "2024": 32735, "2025": 29593,
         },
         # Non-team events at the home venue, parsed from ticketing sites' JSON-LD.
+        # Multiple redundant sources: any datacenter IP block (Songkick 403s the
+        # VPS) is covered by another source, so all events still populate.
         "venue_events": {
             "venue_name": "Globe Life Field",
-            "ticketmaster_url": "https://www.ticketmaster.com/globe-life-field-tickets-arlington/venue/99338",
-            "songkick_url": "https://www.songkick.com/venues/4349753-globe-life-field",
+            "sources": [
+                "https://www.ticketmaster.com/globe-life-field-tickets-arlington/venue/99338",
+                "https://concertfix.com/concerts/arlington-tx+globe-life-field",
+                "https://www.jambase.com/venue/globe-life-field",
+                "https://www.songkick.com/venues/4349753-globe-life-field",
+            ],
         },
         # ESPN futures market names for THIS team's league/division.
         "pennant_future": "MLB - American League - Winner",
@@ -117,17 +123,24 @@ def _jsonld_events(html: str) -> list[dict]:
     return out
 
 
-def _fetch_venue_events(cfg: dict, team_name: str, limit: int = 4) -> list[dict]:
-    """Upcoming NON-team events at the home venue, merged from ticketing JSON-LD.
+def _clean_event_name(name: str) -> str:
+    """Trim venue/location/date suffixes some aggregators append to event names."""
+    name = re.sub(r"\s+", " ", name).strip()
+    # e.g. "Guns N' Roses @ Globe Life Field" / "Noah Kahan - Arlington - Globe Life Field - Jul 30, 2026"
+    name = re.split(r"\s+[-–—@]\s+(?:Arlington|Globe Life Field)\b", name, maxsplit=1)[0]
+    return name.strip(" -–—@")
 
-    Ticketmaster (all event types) is primary; Songkick (concerts) is merged for
-    reach and resilience if one is blocked. The team's own home games are removed.
+
+def _fetch_venue_events(cfg: dict, team_name: str, limit: int = 4) -> list[dict]:
+    """Upcoming NON-team events at the home venue, merged from several ticketing
+    sites' JSON-LD. Redundant sources mean one being IP-blocked (Songkick 403s
+    datacenter IPs) doesn't drop events. The team's own home games are removed.
     """
     vcfg = cfg.get("venue_events") or {}
+    sources = vcfg.get("sources") or [u for u in (vcfg.get("ticketmaster_url"), vcfg.get("songkick_url")) if u]
     raw = []
-    for key in ("ticketmaster_url", "songkick_url"):
-        if vcfg.get(key):
-            raw += _jsonld_events(_get_html(vcfg[key]))
+    for url in sources:
+        raw += _jsonld_events(_get_html(url))
 
     short = team_name.split()[-1].lower()  # 'rangers'
     today = datetime.now(timezone.utc).date().isoformat()
@@ -143,7 +156,7 @@ def _fetch_venue_events(cfg: dict, team_name: str, limit: int = 4) -> list[dict]
         date_iso = e["start"][:10]
         if date_iso < today or is_home_game(e["name"]):
             continue
-        # Dedup the same event appearing on multiple sites: date + first two words.
+        # Dedup the same event across sites: date + first two words of the name.
         norm = " ".join(re.sub(r"[^a-z0-9 ]", "", e["name"].lower()).split()[:2])
         key = (date_iso, norm)
         if key in seen:
@@ -159,7 +172,7 @@ def _fetch_venue_events(cfg: dict, team_name: str, limit: int = 4) -> list[dict]
             "date_iso": date_iso,
             "date": when,
             "time": time_txt,
-            "name": re.sub(r"\s+", " ", e["name"]).strip(),
+            "name": _clean_event_name(e["name"]),
             "url": e["url"],
         })
     events.sort(key=lambda x: x["date_iso"])
