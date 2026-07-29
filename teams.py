@@ -17,10 +17,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 import requests
@@ -89,9 +91,23 @@ def _get(url: str) -> Optional[dict]:
         return None
 
 
+# Full browser-like headers. requests' default `Accept: */*` makes some bot
+# walls (Songkick) return 406 Not Acceptable; real browsers send a specific
+# text/html Accept, which gets through.
+_BROWSER_HEADERS = {
+    "User-Agent": _BROWSER_UA,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Upgrade-Insecure-Requests": "1",
+}
+
+
 def _get_html(url: str) -> Optional[str]:
     try:
-        r = requests.get(url, timeout=_HTTP_TIMEOUT, headers={"User-Agent": _BROWSER_UA})
+        r = requests.get(url, timeout=_HTTP_TIMEOUT, headers=_BROWSER_HEADERS)
         r.raise_for_status()
         return r.text
     except Exception as e:
@@ -131,14 +147,55 @@ def _clean_event_name(name: str) -> str:
     return name.strip(" -–—@")
 
 
+_TM_API = "https://app.ticketmaster.com/discovery/v2"
+
+
+def _tm_api_venue_id(api_key: str, name: str) -> Optional[str]:
+    """Resolve a venue's Ticketmaster Discovery id from its name."""
+    d = _get(f"{_TM_API}/venues.json?keyword={quote(name)}&countryCode=US&size=10&apikey={api_key}")
+    venues = ((d or {}).get("_embedded") or {}).get("venues") or []
+    for v in venues:   # prefer an exact-name match
+        if (v.get("name") or "").lower() == name.lower():
+            return v.get("id")
+    return venues[0].get("id") if venues else None
+
+
+def _tm_api_events(api_key: str, venue_id: str) -> list[dict]:
+    """Full upcoming event list for a venue via the Discovery API (JSON, no bot wall)."""
+    d = _get(f"{_TM_API}/events.json?venueId={venue_id}&sort=date,asc&size=50&apikey={api_key}")
+    out = []
+    for e in ((d or {}).get("_embedded") or {}).get("events") or []:
+        start = (e.get("dates") or {}).get("start") or {}
+        date_iso = start.get("localDate")
+        if not date_iso:
+            continue
+        out.append({
+            "name": (e.get("name") or "").strip(),
+            "start": f"{date_iso}T{start.get('localTime') or '00:00:00'}",
+            "url": e.get("url") or "",
+        })
+    return out
+
+
 def _fetch_venue_events(cfg: dict, team_name: str, limit: int = 4) -> list[dict]:
-    """Upcoming NON-team events at the home venue, merged from several ticketing
-    sites' JSON-LD. Redundant sources mean one being IP-blocked (Songkick 403s
-    datacenter IPs) doesn't drop events. The team's own home games are removed.
+    """Upcoming NON-team events at the home venue. Prefers the Ticketmaster
+    Discovery API when TICKETMASTER_API_KEY is set (a real JSON API — returns the
+    full future calendar, no bot wall); otherwise scrapes ticketing-site JSON-LD.
+    Scraped sources are kept as a fallback/supplement. The team's own home games
+    are removed.
     """
     vcfg = cfg.get("venue_events") or {}
-    sources = vcfg.get("sources") or [u for u in (vcfg.get("ticketmaster_url"), vcfg.get("songkick_url")) if u]
     raw = []
+
+    api_key = os.getenv("TICKETMASTER_API_KEY", "").strip()
+    if api_key:
+        vid = vcfg.get("tm_api_venue_id") or _tm_api_venue_id(api_key, vcfg.get("venue_name", ""))
+        if vid:
+            raw += _tm_api_events(api_key, vid)
+        else:
+            logger.warning("teams: Ticketmaster API key set but venue id not resolved")
+
+    sources = vcfg.get("sources") or [u for u in (vcfg.get("ticketmaster_url"), vcfg.get("songkick_url")) if u]
     for url in sources:
         raw += _jsonld_events(_get_html(url))
 
