@@ -100,24 +100,26 @@ def _sparkline(series, kind="count", width=120, height=28):
     </svg>'''
 
 
-def _attendance_bars(series, avg_line=None, width=560, height=150):
-    """Vertical bars of avg attendance/game by season; current year highlighted."""
+def _attendance_bars(series, avg_line=None, width=560, height=96):
+    """Vertical bars of avg attendance/game by season; current year highlighted.
+
+    The 10-yr average is drawn as a bare dashed reference line — its value is
+    already stated in the caption above, so no on-chart label (avoids overlap).
+    """
     if not series:
         return '<div class="gauge-empty">no attendance data</div>'
     vals = [s["avg"] for s in series]
-    hi = max(vals) * 1.12
-    pad_t, pad_b, pad_x = 20, 22, 4
+    hi = max(vals) * 1.05
+    pad_t, pad_b, pad_x = 14, 15, 4
     iw, ih = width - pad_x * 2, height - pad_t - pad_b
     n = len(series)
     slot = iw / n
-    bw = slot * 0.66
+    bw = slot * 0.68
     parts = []
     if avg_line:
         ly = pad_t + ih * (1 - avg_line / hi)
         parts.append(f'<line x1="{pad_x}" y1="{ly:.1f}" x2="{pad_x+iw}" y2="{ly:.1f}" '
-                     f'stroke="var(--ink-faint)" stroke-width="1" stroke-dasharray="3 3" opacity="0.7"/>')
-        parts.append(f'<text x="{pad_x+iw}" y="{ly-3:.1f}" text-anchor="end" font-size="8.5" '
-                     f'fill="var(--ink-faint)">10-yr avg {avg_line:,}</text>')
+                     f'stroke="var(--ink-faint)" stroke-width="1" stroke-dasharray="3 3" opacity="0.6"/>')
     for i, s in enumerate(series):
         x = pad_x + slot * i + (slot - bw) / 2
         bh = ih * (s["avg"] / hi)
@@ -125,12 +127,12 @@ def _attendance_bars(series, avg_line=None, width=560, height=150):
         cur = s.get("is_current")
         fill = "var(--good)" if cur else "#cbd5e1"
         parts.append(f'<rect x="{x:.1f}" y="{y:.1f}" width="{bw:.1f}" height="{bh:.1f}" rx="2" fill="{fill}"/>')
-        parts.append(f"<text x=\"{x+bw/2:.1f}\" y=\"{height-7}\" text-anchor=\"middle\" font-size=\"9\" "
+        parts.append(f"<text x=\"{x+bw/2:.1f}\" y=\"{height-5}\" text-anchor=\"middle\" font-size=\"8.5\" "
                      f"fill=\"{'var(--good)' if cur else 'var(--ink-faint)'}\">'{str(s['year'])[2:]}</text>")
         if cur:
-            parts.append(f'<text x="{x+bw/2:.1f}" y="{y-4:.1f}" text-anchor="middle" font-size="9.5" '
+            parts.append(f'<text x="{x+bw/2:.1f}" y="{y-3:.1f}" text-anchor="middle" font-size="8.5" '
                          f'font-weight="700" fill="var(--good)">{s["avg"]:,}</text>')
-    return (f'<svg viewBox="0 0 {width} {height}" width="100%" height="{height}" '
+    return (f'<svg viewBox="0 0 {width} {height}" width="100%" '
             f'preserveAspectRatio="xMidYMid meet" class="bars">{"".join(parts)}</svg>')
 
 
@@ -1139,17 +1141,17 @@ body {
 .odds-box .ov { font-size: 18px; font-weight: 800; color: var(--ink); margin-top: 2px; }
 .odds-box .os { font-size: 9.5px; color: var(--ink-faint); }
 .odds-box.pct .ov { color: var(--good); }
-.team-cols { display: grid; grid-template-columns: 1fr 1.2fr; gap: 16px; }
+.team-cols { display: grid; grid-template-columns: 1.35fr 1fr; gap: 16px; }
 @media (max-width: 720px) { .team-cols { grid-template-columns: 1fr; } }
-.team-h { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-faint); font-weight: 700; margin-bottom: 6px; }
-.game { display: flex; align-items: baseline; gap: 6px; padding: 5px 0; border-bottom: 1px solid var(--line-soft); font-size: 12px; }
+.team-h { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-faint); font-weight: 700; margin-bottom: 4px; }
+.game { display: flex; align-items: baseline; gap: 6px; padding: 2px 0; border-bottom: 1px solid var(--line-soft); font-size: 12px; line-height: 1.25; }
 .game:last-child { border-bottom: 0; }
 .game .gd { color: var(--ink-faint); min-width: 78px; }
 .game .go { flex: 1; color: var(--ink); }
 .game .gr { font-weight: 700; }
 .game .gr.win { color: var(--good); } .game .gr.loss { color: var(--bad); }
 .game .gt { color: var(--ink-soft); font-size: 11px; white-space: nowrap; }
-.game .gtv { display: block; font-size: 10.5px; color: var(--ink-faint); margin-top: 1px; }
+.game .gtv { font-size: 10px; color: var(--ink-faint); margin-left: 6px; white-space: nowrap; }
 /* live score banner */
 .live-banner {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
@@ -1164,16 +1166,17 @@ body {
 .live-meta .bases { letter-spacing: 1px; color: var(--warn); }
 /* season trends */
 .team-trends { margin-bottom: 14px; }
-.trend-grid { display: grid; grid-template-columns: 1fr 1.7fr; gap: 12px; align-items: start; }
+.trend-grid { display: grid; grid-template-columns: 1fr 1.7fr; gap: 12px; align-items: stretch; }
 @media (max-width: 720px) { .trend-grid { grid-template-columns: 1fr; } }
-.trend-cell { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: var(--card); text-align: center; }
+.trend-cell { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: var(--card); text-align: center; display: flex; flex-direction: column; }
 .trend-cell.wide { text-align: left; }
 .tc-title { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-faint); font-weight: 700; }
 .tc-val { font-size: 17px; font-weight: 800; color: var(--ink); margin: 3px 0; }
 .tc-val.good { color: var(--good); } .tc-val.bad { color: var(--bad); }
 .tc-sub { font-size: 9.5px; color: var(--ink-faint); margin-top: 3px; }
-svg.trend { display: block; }
-svg.bars { display: block; margin-top: 4px; }
+/* the games-ahead line chart grows to fill its cell so there's no gap below it */
+.trend-cell svg.trend { display: block; flex: 1 1 auto; min-height: 68px; height: auto; width: 100%; }
+svg.bars { display: block; height: auto; margin-top: 6px; }
 .gauge-empty { font-size: 12px; color: var(--ink-faint); padding: 30px 0; text-align: center; }
 table.stand { width: 100%; border-collapse: collapse; font-size: 12px; }
 table.stand th { text-align: right; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-faint); padding: 3px 6px; border-bottom: 1px solid var(--line); }

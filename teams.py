@@ -272,7 +272,9 @@ def _fetch_broadcasts(sport_path: str, abbr: str, games: list[dict]) -> dict:
         for b in comp.get("broadcasts") or []:
             if b.get("market") in ("national", ha):
                 for n in b.get("names") or []:
-                    if n not in names:
+                    # MLB.TV is the generic streaming package, not a TV channel —
+                    # skip it so the row shows the actual broadcaster and fits one line.
+                    if n and n != "MLB.TV" and n not in names:
                         names.append(n)
         if names:
             out[ev.get("id")] = " · ".join(names)
