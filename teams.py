@@ -42,6 +42,7 @@ TEAMS = [
         "espn_abbr": "tex",
         "espn_id": "13",
         "division_name": "American League West",
+        "division_abbrs": ["TEX", "HOU", "SEA", "ATH", "LAA"],  # for standings-by-date reconstruction
         # ESPN futures market names for THIS team's league/division.
         "pennant_future": "MLB - American League - Winner",
         "pennant_label": "Win American League",
@@ -95,19 +96,33 @@ def _parse_event(ev: dict, abbr: str) -> Optional[dict]:
             return None
 
     us_score, them_score = _score(us), _score(them)
+    won = None
     result = None
     if state == "post" and us_score is not None and them_score is not None:
+        won = bool(us.get("winner"))
         wl = "W" if us.get("winner") else ("L" if them.get("winner") else "—")
         result = f"{wl} {int(us_score)}–{int(them_score)}"
 
     return {
+        "id": ev.get("id"),
+        "date_iso": (ev.get("date") or "")[:10],   # UTC calendar date — stable join key
         "state": state,
         "date": date_str,
         "time": time_str,
         "opponent": opp_name,
         "home_away": "vs" if home_away == "home" else "@",
+        "home_away_raw": home_away,
         "result": result,
+        "won": won,
+        "tv": None,   # filled in later from the scoreboard feed
     }
+
+
+def _team_games(sport_path: str, abbr: str) -> list[dict]:
+    """All parsed games for a team, in schedule order."""
+    d = _get(f"https://site.api.espn.com/apis/site/v2/sports/{sport_path}/teams/{abbr}/schedule")
+    events = (d or {}).get("events") or []
+    return [g for g in (_parse_event(e, abbr) for e in events) if g]
 
 
 def _fetch_record_and_standing(sport_path: str, abbr: str) -> dict:
@@ -126,16 +141,107 @@ def _fetch_record_and_standing(sport_path: str, abbr: str) -> dict:
     }
 
 
-def _fetch_schedule(sport_path: str, abbr: str) -> dict:
-    d = _get(f"https://site.api.espn.com/apis/site/v2/sports/{sport_path}/teams/{abbr}/schedule")
-    events = (d or {}).get("events") or []
-    games = [g for g in (_parse_event(e, abbr) for e in events) if g]
+def _fetch_broadcasts(sport_path: str, abbr: str, games: list[dict]) -> dict:
+    """{event_id: 'TV label'} for the given games, from the scoreboard feed.
+
+    We join on ESPN event id (not date) because a night game's UTC calendar
+    date can differ from its local date. Prefer national + the team's own feed.
+    """
+    if not games:
+        return {}
+    dates = sorted({g["date_iso"].replace("-", "") for g in games if g.get("date_iso")})
+    if not dates:
+        return {}
+    rng = dates[0] if len(dates) == 1 else f"{dates[0]}-{dates[-1]}"
+    d = _get(f"https://site.api.espn.com/apis/site/v2/sports/{sport_path}/scoreboard?dates={rng}&limit=300")
+    out = {}
+    for ev in (d or {}).get("events") or []:
+        comp = (ev.get("competitions") or [{}])[0]
+        us = next((c for c in comp.get("competitors") or []
+                   if (c.get("team") or {}).get("abbreviation", "").upper() == abbr.upper()), None)
+        if not us:
+            continue
+        ha = us.get("homeAway")
+        names = []
+        for b in comp.get("broadcasts") or []:
+            if b.get("market") in ("national", ha):
+                for n in b.get("names") or []:
+                    if n not in names:
+                        names.append(n)
+        if names:
+            out[ev.get("id")] = " · ".join(names)
+    return out
+
+
+def _fetch_schedule(sport_path: str, abbr: str, games: list[dict]) -> dict:
     played = [g for g in games if g["state"] == "post"]
     upcoming = [g for g in games if g["state"] == "pre"]
+    nxt = upcoming[:3]
+    tv = _fetch_broadcasts(sport_path, abbr, nxt)
+    for g in nxt:
+        g["tv"] = tv.get(g["id"])
     return {
         "previous": played[-3:][::-1],   # most-recent first
-        "next": upcoming[:3],
+        "next": nxt,
     }
+
+
+def _winpct_series(games: list[dict]) -> list[dict]:
+    """Cumulative win% after each completed game — the real season trajectory."""
+    w = l = 0
+    series = []
+    for g in games:
+        if g["state"] != "post" or g["won"] is None:
+            continue
+        if g["won"]:
+            w += 1
+        else:
+            l += 1
+        series.append({"d": g["date_iso"], "v": round(w / (w + l), 3)})
+    return series
+
+
+def _games_ahead_series(sport_path: str, division_abbrs: list[str], team_abbr: str,
+                        team_games: list[dict]) -> list[dict]:
+    """Signed games ahead/behind in the division after each of the team's games.
+
+    Positive = leading the division (margin over 2nd); negative = games behind
+    the leader. Rebuilt from every division team's game log, standings-by-date.
+    """
+    logs = {team_abbr.upper(): [(g["date_iso"], g["won"]) for g in team_games
+                                if g["state"] == "post" and g["won"] is not None]}
+    for ab in division_abbrs:
+        if ab.upper() == team_abbr.upper():
+            continue
+        games = _team_games(sport_path, ab.lower())
+        logs[ab.upper()] = [(g["date_iso"], g["won"]) for g in games
+                            if g["state"] == "post" and g["won"] is not None]
+
+    def wl_asof(ab, date):
+        W = L = 0
+        for d, won in logs.get(ab, []):
+            if d <= date:
+                W += 1 if won else 0
+                L += 0 if won else 1
+        return W, L
+
+    series = []
+    for date, _ in logs[team_abbr.upper()]:
+        standings = []
+        for ab in logs:
+            W, L = wl_asof(ab, date)
+            pct = W / max(W + L, 1)
+            standings.append((ab, W, L, pct))
+        standings.sort(key=lambda x: (-x[3], -x[1]))
+        me = next(s for s in standings if s[0] == team_abbr.upper())
+        if me[0] == standings[0][0]:                 # leading → ahead of 2nd
+            second = standings[1]
+            val = ((me[1] - second[1]) + (second[2] - me[2])) / 2
+        else:                                        # trailing → behind leader
+            lead = standings[0]
+            val = -((lead[1] - me[1]) + (me[2] - lead[2])) / 2
+        series.append({"d": date, "v": round(val, 1)})
+    return series
 
 
 def _walk_find_team(node, abbr):
@@ -212,17 +318,26 @@ def _fetch_division_and_playoff(sport_path: str, division_name: str, abbr: str) 
     return {"table": table, "playoff_pct": playoff_pct}
 
 
-def _extract_team_odds(future: dict, espn_id: str) -> Optional[str]:
-    """Team's moneyline from one ESPN future — prefer ESPN BET, else first book."""
+# Book preference — DraftKings first: it prices every market (incl. divisions),
+# so all lines come from one consistent book. Falls through if a book is absent.
+_PROVIDER_PREFERENCE = ["DraftKings", "ESPN BET", "FanDuel", "Caesars Sportsbook"]
+
+
+def _extract_team_odds(future: dict, espn_id: str) -> tuple[Optional[str], Optional[str]]:
+    """(moneyline, book name) for the team, from the most-preferred book that prices it."""
     providers = future.get("futures") or []
-    ordered = sorted(providers, key=lambda p: 0 if (p.get("provider") or {}).get("name") == "ESPN BET" else 1)
-    for prov in ordered:
+
+    def rank(p):
+        name = (p.get("provider") or {}).get("name") or ""
+        return _PROVIDER_PREFERENCE.index(name) if name in _PROVIDER_PREFERENCE else len(_PROVIDER_PREFERENCE)
+
+    for prov in sorted(providers, key=rank):
         for book in (prov.get("books") or []):
             ref = (book.get("team") or {}).get("$ref", "")
             tid = ref.split("/teams/")[-1].split("?")[0] if "/teams/" in ref else None
             if tid == espn_id:
-                return book.get("value")
-    return None
+                return book.get("value"), (prov.get("provider") or {}).get("name")
+    return None, None
 
 
 def _fetch_futures(cfg: dict) -> dict:
@@ -233,12 +348,13 @@ def _fetch_futures(cfg: dict) -> dict:
 
     def odds(name):
         fut = by_name.get(name)
-        return _extract_team_odds(fut, espn_id) if fut else None
+        return _extract_team_odds(fut, espn_id) if fut else (None, None)
 
+    ws, pen, div = odds(cfg["worldseries_future"]), odds(cfg["pennant_future"]), odds(cfg["division_future"])
     return {
-        "world_series": odds(cfg["worldseries_future"]),
-        "pennant": odds(cfg["pennant_future"]),
-        "division": odds(cfg["division_future"]),
+        "world_series": ws[0], "world_series_book": ws[1],
+        "pennant": pen[0], "pennant_book": pen[1],
+        "division": div[0], "division_book": div[1],
     }
 
 
@@ -275,12 +391,27 @@ def _fetch_news(sport_path: str, team_name: str, espn_id: str, limit: int = 5) -
     return out
 
 
+def _pct_to_float(pct_str) -> Optional[float]:
+    if not pct_str:
+        return None
+    try:
+        return float(str(pct_str).replace("%", ""))
+    except ValueError:
+        return None
+
+
 def _build_team(cfg: dict) -> dict:
     core = _fetch_record_and_standing(cfg["sport_path"], cfg["espn_abbr"])
-    schedule = _fetch_schedule(cfg["sport_path"], cfg["espn_abbr"])
+    games = _team_games(cfg["sport_path"], cfg["espn_abbr"])
+    schedule = _fetch_schedule(cfg["sport_path"], cfg["espn_abbr"], games)
     div = _fetch_division_and_playoff(cfg["sport_path"], cfg["division_name"], cfg["espn_abbr"])
     futures = _fetch_futures(cfg)
     news = _fetch_news(cfg["sport_path"], cfg["name"], cfg["espn_id"])
+
+    winpct = _winpct_series(games)
+    games_ahead = _games_ahead_series(
+        cfg["sport_path"], cfg.get("division_abbrs") or [], cfg["espn_abbr"], games
+    )
     return {
         "name": core.get("name") or cfg["name"],
         "league": cfg["league"],
@@ -294,9 +425,17 @@ def _build_team(cfg: dict) -> dict:
         "odds": {
             "playoff_pct": div["playoff_pct"],       # model probability, not a line
             "pennant": futures["pennant"],
+            "pennant_book": futures["pennant_book"],
             "pennant_label": cfg["pennant_label"],
             "world_series": futures["world_series"],
+            "world_series_book": futures["world_series_book"],
             "division": futures["division"],
+            "division_book": futures["division_book"],
+        },
+        "charts": {
+            "playoff_pct": _pct_to_float(div["playoff_pct"]),
+            "winpct": winpct,
+            "games_ahead": games_ahead,
         },
         "news": news,
     }

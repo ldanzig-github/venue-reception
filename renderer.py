@@ -100,6 +100,65 @@ def _sparkline(series, kind="count", width=120, height=28):
     </svg>'''
 
 
+def _gauge_svg(pct, size=104):
+    """Donut gauge for a 0–100 percentage (e.g. playoff probability)."""
+    if pct is None:
+        return '<div class="gauge-empty">n/a</div>'
+    pct = max(0.0, min(100.0, float(pct)))
+    r, cx, cy = size / 2 - 9, size / 2, size / 2
+    import math
+    circ = 2 * math.pi * r
+    dash = circ * pct / 100
+    color = "var(--good)" if pct >= 60 else ("var(--warn)" if pct >= 35 else "var(--bad)")
+    return f'''<svg viewBox="0 0 {size} {size}" width="{size}" height="{size}" class="gauge">
+        <circle cx="{cx}" cy="{cy}" r="{r:.1f}" fill="none" stroke="var(--line)" stroke-width="9"/>
+        <circle cx="{cx}" cy="{cy}" r="{r:.1f}" fill="none" stroke="{color}" stroke-width="9"
+                stroke-linecap="round" stroke-dasharray="{dash:.1f} {circ:.1f}"
+                transform="rotate(-90 {cx} {cy})"/>
+        <text x="{cx}" y="{cy}" text-anchor="middle" dominant-baseline="central"
+              font-size="21" font-weight="800" fill="var(--ink)">{pct:.0f}<tspan font-size="11">%</tspan></text>
+    </svg>'''
+
+
+def _trend_chart(series, key="v", width=260, height=84, zero_line=False):
+    """Season-long line chart from [{d, v}]. zero_line splits above/below zero."""
+    pts = [p.get(key) for p in (series or []) if p.get(key) is not None]
+    if len(pts) < 2:
+        return '<div class="gauge-empty">not enough data yet</div>'
+    lo, hi = min(pts), max(pts)
+    if zero_line:
+        m = max(abs(lo), abs(hi), 1)
+        lo, hi = -m, m
+    rng = (hi - lo) or 1
+    n = len(pts)
+    pad = 4
+    iw, ih = width - pad * 2, height - pad * 2
+
+    def X(i):
+        return pad + iw * i / (n - 1)
+
+    def Y(v):
+        return pad + ih * (1 - (v - lo) / rng)
+
+    poly = " ".join(f"{X(i):.1f},{Y(v):.1f}" for i, v in enumerate(pts))
+    up = pts[-1] >= pts[0]
+    color = "var(--good)" if up else "var(--bad)"
+    fill = "rgba(34,197,94,0.10)" if up else "rgba(220,38,38,0.10)"
+    area = f"M{pad},{height - pad} L{poly.replace(' ', ' L')} L{width - pad},{height - pad} Z"
+    baseline = ""
+    if zero_line:
+        zy = Y(0)
+        baseline = (f'<line x1="{pad}" y1="{zy:.1f}" x2="{width - pad}" y2="{zy:.1f}" '
+                    f'stroke="var(--ink-faint)" stroke-width="1" stroke-dasharray="3 3" opacity="0.6"/>')
+    lx, ly = X(n - 1), Y(pts[-1])
+    return f'''<svg class="trend" viewBox="0 0 {width} {height}" preserveAspectRatio="none" width="100%" height="{height}">
+        <path d="{area}" fill="{fill}" stroke="none"/>
+        {baseline}
+        <polyline points="{poly}" fill="none" stroke="{color}" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle cx="{lx:.1f}" cy="{ly:.1f}" r="2.5" fill="{color}"/>
+    </svg>'''
+
+
 def _status_pill(trends, sparkline, count, current_rating, positive_pct=None):
     """
     Categorize entity momentum.
@@ -483,16 +542,21 @@ def _team_block(team):
                 f'<div class="ov">{escape(value or "—")}</div>'
                 f'<div class="os">{escape(sub_txt)}</div></div>')
 
+    def _book(b):
+        return f"via {b}" if b else "moneyline"
+
     odds_html = "".join([
         _odds_box("Make Playoffs", odds.get("playoff_pct"), "ESPN model prob.", "pct"),
-        _odds_box("Win AL West", odds.get("division"), "moneyline"),
-        _odds_box(odds.get("pennant_label") or "Win League", odds.get("pennant"), "moneyline"),
-        _odds_box("Win World Series", odds.get("world_series"), "moneyline"),
+        _odds_box("Win AL West", odds.get("division"), _book(odds.get("division_book"))),
+        _odds_box(odds.get("pennant_label") or "Win League", odds.get("pennant"), _book(odds.get("pennant_book"))),
+        _odds_box("Win World Series", odds.get("world_series"), _book(odds.get("world_series_book"))),
     ])
 
     def _next_game(g):
+        tv = g.get("tv")
+        tv_html = f'<span class="gtv">📺 {escape(tv)}</span>' if tv else ""
         return (f'<div class="game"><span class="gd">{escape(g.get("date",""))}</span>'
-                f'<span class="go">{escape(g.get("home_away",""))} {escape(g.get("opponent",""))}</span>'
+                f'<span class="go">{escape(g.get("home_away",""))} {escape(g.get("opponent",""))}{tv_html}</span>'
                 f'<span class="gt">{escape(g.get("time",""))}</span></div>')
 
     def _prev_game(g):
@@ -521,6 +585,44 @@ def _team_block(team):
                        f'<span class="nd">{escape(n.get("published",""))}</span>{escape(n.get("headline",""))}</a>')
     news_html = f'<div class="team-news"><div class="team-h">Recent news</div>{news_items}</div>' if news_items else ""
 
+    # ── Season trends: playoff-odds gauge + win% and games-ahead trajectories ──
+    charts = team.get("charts") or {}
+    win_series = charts.get("winpct") or []
+    ahead_series = charts.get("games_ahead") or []
+    win_val = f'{win_series[-1]["v"]:.3f}'.lstrip("0") if win_series else "—"
+    ahead_last = ahead_series[-1]["v"] if ahead_series else None
+    if ahead_last is None:
+        ahead_txt, ahead_cls = "—", ""
+    elif ahead_last > 0:
+        ahead_txt, ahead_cls = f"+{ahead_last:g} ahead", "good"
+    elif ahead_last < 0:
+        ahead_txt, ahead_cls = f"{ahead_last:g} behind", "bad"
+    else:
+        ahead_txt, ahead_cls = "tied for lead", ""
+
+    trends_html = f"""<div class="team-trends">
+        <div class="team-h">Season trends</div>
+        <div class="trend-grid">
+          <div class="trend-cell">
+            <div class="tc-title">Playoff probability</div>
+            <div class="tc-gauge">{_gauge_svg(charts.get("playoff_pct"))}</div>
+            <div class="tc-sub">ESPN model, current</div>
+          </div>
+          <div class="trend-cell">
+            <div class="tc-title">Win %</div>
+            <div class="tc-val">{win_val}</div>
+            {_trend_chart(win_series)}
+            <div class="tc-sub">cumulative, season to date</div>
+          </div>
+          <div class="trend-cell">
+            <div class="tc-title">Games ahead / behind</div>
+            <div class="tc-val {ahead_cls}">{escape(ahead_txt)}</div>
+            {_trend_chart(ahead_series, zero_line=True)}
+            <div class="tc-sub">in AL West · dashed = tied for lead</div>
+          </div>
+        </div>
+      </div>"""
+
     return f"""<article class="card">
     <header class="card-h">
       <div class="card-title">
@@ -531,6 +633,7 @@ def _team_block(team):
     </header>
     <div class="card-body" style="display:block">
       <div class="team-odds">{odds_html}</div>
+      {trends_html}
       <div class="team-cols">
         <div>
           <div class="team-h">Next 3 games</div>{next_html}
@@ -994,7 +1097,21 @@ body {
 .game .go { flex: 1; color: var(--ink); }
 .game .gr { font-weight: 700; }
 .game .gr.win { color: var(--good); } .game .gr.loss { color: var(--bad); }
-.game .gt { color: var(--ink-soft); font-size: 11px; }
+.game .gt { color: var(--ink-soft); font-size: 11px; white-space: nowrap; }
+.game .gtv { display: block; font-size: 10.5px; color: var(--ink-faint); margin-top: 1px; }
+/* season trends */
+.team-trends { margin-bottom: 14px; }
+.trend-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+@media (max-width: 720px) { .trend-grid { grid-template-columns: 1fr; } }
+.trend-cell { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: var(--card); text-align: center; }
+.tc-title { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-faint); font-weight: 700; }
+.tc-val { font-size: 17px; font-weight: 800; color: var(--ink); margin: 3px 0; }
+.tc-val.good { color: var(--good); } .tc-val.bad { color: var(--bad); }
+.tc-sub { font-size: 9.5px; color: var(--ink-faint); margin-top: 3px; }
+.tc-gauge { margin: 4px 0; }
+svg.gauge { display: block; margin: 0 auto; }
+svg.trend { display: block; }
+.gauge-empty { font-size: 12px; color: var(--ink-faint); padding: 30px 0; }
 table.stand { width: 100%; border-collapse: collapse; font-size: 12px; }
 table.stand th { text-align: right; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-faint); padding: 3px 6px; border-bottom: 1px solid var(--line); }
 table.stand th:first-child { text-align: left; }
