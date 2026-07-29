@@ -591,10 +591,15 @@ def _team_block(team):
     def _prev_game(g):
         res = g.get("result") or ""
         rcls = "win" if res.startswith("W") else ("loss" if res.startswith("L") else "")
-        hl = g.get("highlight") or ""
+        opp_bits = " · ".join(filter(None, [
+            g.get("opp_record"),
+            " ".join(filter(None, [g.get("opp_rank"), g.get("opp_div")])),
+        ]))
+        hl = g.get("statline") or ""
         return (f'<div class="g-prev">'
                 f'<span class="gd">{escape(g.get("date",""))}</span>'
                 f'<span class="gm">{escape(g.get("home_away",""))} {escape(g.get("opponent",""))}</span>'
+                f'<span class="gopp">{escape(opp_bits)}</span>'
                 f'<span class="gr {rcls}">{escape(res)}</span>'
                 f'<span class="ghl" title="{escape(hl)}">{escape(hl)}</span></div>')
 
@@ -610,25 +615,28 @@ def _team_block(team):
     stand_html = (f'<table class="stand"><thead><tr><th>{escape(team.get("division_name",""))}</th>'
                   f'<th>W</th><th>L</th><th>PCT</th><th>GB</th></tr></thead><tbody>{rows}</tbody></table>')
 
+    news = list(team.get("news") or [])
     news_items = ""
-    for n in (team.get("news") or []):
+    for n in news:
         url = n.get("url") or "#"
         news_items += (f'<a href="{escape(url)}" target="_blank" rel="noopener">'
                        f'<span class="nd">{escape(n.get("published",""))}</span>{escape(n.get("headline",""))}</a>')
-    news_html = f'<div class="team-news"><div class="team-h">Recent news</div>{news_items}</div>' if news_items else ""
+    news_items += '<div class="empty-row">—</div>' * max(0, 5 - len(news))  # always 5 rows
+    news_html = f'<div class="team-news"><div class="team-h">Recent news</div>{news_items}</div>'
 
     # ── Non-team events at the home venue ──
     venue_name = team.get("venue_name") or "the venue"
+    events = list(team.get("venue_events") or [])
     ve_items = ""
-    for e in (team.get("venue_events") or []):
+    for e in events:
         url = e.get("url") or "#"
         when = e.get("date", "") + (f' · {e["time"]}' if e.get("time") else "")
         ve_items += (f'<a class="ve" href="{escape(url)}" target="_blank" rel="noopener">'
                      f'<span class="ve-date">{escape(when)}</span>'
                      f'<span class="ve-name">{escape(e.get("name",""))}</span></a>')
+    ve_items += '<div class="empty-row">—</div>' * max(0, 5 - len(events))  # always 5 rows
     venue_events_html = (
         f'<div class="venue-events"><div class="team-h">Also at {escape(venue_name)} · non-Rangers</div>{ve_items}</div>'
-        if ve_items else ""
     )
 
     # ── Live score banner (only while a game is in progress) ──
@@ -716,7 +724,9 @@ def _team_block(team):
       <div class="team-odds">{odds_html}</div>
       {trends_html}
       <div class="team-schedule">
-        <div class="team-h">Next 3 games</div>{next_html}
+        <div class="next-half">
+          <div class="team-h">Next 3 games</div>{next_html}
+        </div>
         <div class="team-h" style="margin-top:10px">Previous 3 games</div>{prev_html}
       </div>
       <div class="team-bottom">
@@ -1170,24 +1180,29 @@ body {
 .team-h { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-faint); font-weight: 700; margin-bottom: 4px; }
 /* rich one-row games */
 .team-schedule { margin-bottom: 14px; }
-.g-next, .g-prev { display: grid; align-items: baseline; gap: 8px; padding: 3px 0; border-bottom: 1px solid var(--line-soft); font-size: 12px; line-height: 1.3; }
-.g-next { grid-template-columns: 84px minmax(110px,1.1fr) 1.35fr 0.85fr 1.05fr auto; }
-.g-prev { grid-template-columns: 84px minmax(110px,1fr) 60px 2.6fr; }
+.next-half { width: 50%; }
+@media (max-width: 860px) { .next-half { width: 100%; } }
+.g-next, .g-prev { display: grid; align-items: baseline; gap: 8px; padding: 3px 0; border-bottom: 1px solid var(--line-soft); font-size: 11.5px; line-height: 1.3; }
+/* Next games — compact, fits in the left half; columns align across rows */
+.g-next { grid-template-columns: 62px minmax(84px,1fr) minmax(88px,auto) auto auto; column-gap: 10px; }
+/* Previous games — full width: date, matchup, opp, result, shorthand stat line */
+.g-prev { grid-template-columns: 84px minmax(110px,150px) minmax(120px,150px) 58px minmax(0,1fr); }
 .g-next:last-child, .g-prev:last-child { border-bottom: 0; }
 .g-next .gd, .g-prev .gd { color: var(--ink-faint); white-space: nowrap; }
 .gm { color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .gopp { color: var(--ink-soft); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .gwx { color: var(--ink-soft); font-size: 11px; white-space: nowrap; }
-.gtv2 { color: var(--ink-faint); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.g-next .gtv2 { display: none; }   /* TV omitted in the condensed half-width next table */
 .g-next .gt { color: var(--ink-soft); font-size: 11px; white-space: nowrap; text-align: right; }
 .g-prev .gr { font-weight: 700; text-align: left; }
 .g-prev .gr.win { color: var(--good); } .g-prev .gr.loss { color: var(--bad); }
 .ghl { color: var(--ink-soft); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 @media (max-width: 720px) {
-  .g-next { grid-template-columns: 70px 1fr auto; }
-  .g-prev { grid-template-columns: 70px 1fr auto; }
-  .g-next .gopp, .g-next .gwx, .g-next .gtv2, .g-prev .ghl { display: none; }
+  .g-prev { grid-template-columns: 70px 1fr 54px; }
+  .g-prev .gopp, .g-prev .ghl { display: none; }
 }
+.empty-row { padding: 6px 0; border-bottom: 1px solid var(--line-soft); color: var(--line); font-size: 12px; }
+.empty-row:last-child { border-bottom: 0; }
 /* bottom row: venue events + news side by side */
 .team-bottom { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px 24px; align-items: start; }
 /* live score banner */

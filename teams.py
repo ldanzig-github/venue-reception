@@ -117,7 +117,7 @@ def _jsonld_events(html: str) -> list[dict]:
     return out
 
 
-def _fetch_venue_events(cfg: dict, team_name: str, limit: int = 6) -> list[dict]:
+def _fetch_venue_events(cfg: dict, team_name: str, limit: int = 5) -> list[dict]:
     """Upcoming NON-team events at the home venue, merged from ticketing JSON-LD.
 
     Ticketmaster (all event types) is primary; Songkick (concerts) is merged for
@@ -652,8 +652,50 @@ def _all_standings_lookup(sport_path: str) -> dict:
     return out
 
 
-def _fetch_game_meta(sport_path: str, event_id: str) -> dict:
-    """Weather forecast + recap highlight for one game, from its summary."""
+def _extract_statline(summary: dict, team_abbr: str) -> Optional[str]:
+    """Shorthand box-score line for a team's standout performers, e.g.
+    'Joc Pederson 2/4, 2HR, 4RBI; Kumar Rocker 6.2IP, 7K, 2ER'."""
+    box = summary.get("boxscore") or {}
+    for tp in box.get("players") or []:
+        if (tp.get("team") or {}).get("abbreviation", "").upper() != team_abbr.upper():
+            continue
+        batters, pitcher = [], []
+        for st in tp.get("statistics") or []:
+            labels = st.get("labels") or []
+            idx = {lab: i for i, lab in enumerate(labels)}
+            typ = st.get("type")
+
+            def _g(a_stats, lab):
+                i = idx.get(lab)
+                return a_stats[i] if i is not None and i < len(a_stats) else None
+
+            for a in st.get("athletes") or []:
+                s = a.get("stats") or []
+                if not s:
+                    continue
+                name = (a.get("athlete") or {}).get("displayName") or (a.get("athlete") or {}).get("shortName")
+                if typ == "batting":
+                    try:
+                        hr, rbi, h = int(_g(s, "HR") or 0), int(_g(s, "RBI") or 0), int(_g(s, "H") or 0)
+                    except (TypeError, ValueError):
+                        hr = rbi = h = 0
+                    if hr > 0 or rbi >= 2 or h >= 3:   # only notable lines
+                        parts = [(_g(s, "H-AB") or "").replace("-", "/")]
+                        if hr > 0:
+                            parts.append(f"{hr}HR")
+                        if rbi > 0:
+                            parts.append(f"{rbi}RBI")
+                        batters.append((hr, rbi, h, f"{name} {', '.join(parts)}"))
+                elif typ == "pitching" and not pitcher:   # starter is listed first
+                    pitcher.append(f"{name} {_g(s,'IP')}IP, {_g(s,'K')}K, {_g(s,'ER')}ER")
+        batters.sort(key=lambda x: (-x[0], -x[1], -x[2]))
+        line = "; ".join([b[3] for b in batters[:2]] + pitcher[:1])
+        return line or None
+    return None
+
+
+def _fetch_game_meta(sport_path: str, event_id: str, team_abbr: str = "") -> dict:
+    """Weather forecast + shorthand stat line for one game, from its summary."""
     if not event_id:
         return {}
     d = _get(f"https://site.api.espn.com/apis/site/v2/sports/{sport_path}/summary?event={event_id}")
@@ -666,12 +708,8 @@ def _fetch_game_meta(sport_path: str, event_id: str) -> dict:
             "temp": wx.get("temperature"),
             "precip": wx.get("precipitation"),
         }
-    art = d.get("article") or {}
-    highlight = art.get("description") or art.get("headline")
-    if highlight:
-        # Strip the leading dateline dash and trim to a compact one-liner.
-        highlight = re.sub(r"^\s*[—–-]\s*", "", highlight).strip()
-        meta["highlight"] = highlight
+    if team_abbr:
+        meta["statline"] = _extract_statline(d, team_abbr)
     return meta
 
 
@@ -706,17 +744,20 @@ def _build_team(cfg: dict) -> dict:
     # recap highlights for completed games.
     sport_path = cfg["sport_path"]
     standings = _all_standings_lookup(sport_path)
-    for g in schedule["next"]:
+    def _add_opp(g):
         opp = standings.get(g.get("opponent_abbr")) or {}
         g["opp_record"] = opp.get("record")
         g["opp_div"] = opp.get("div")
         g["opp_rank"] = opp.get("rank")
-        wm = _fetch_game_meta(sport_path, g.get("id"))
-        wx = wm.get("weather")
+
+    for g in schedule["next"]:
+        _add_opp(g)
+        wx = _fetch_game_meta(sport_path, g.get("id")).get("weather")
         if wx:
             g["weather"] = {"icon": _weather_icon(wx.get("precip")), **wx}
     for g in schedule["previous"]:
-        g["highlight"] = _fetch_game_meta(sport_path, g.get("id")).get("highlight")
+        _add_opp(g)
+        g["statline"] = _fetch_game_meta(sport_path, g.get("id"), cfg["espn_abbr"]).get("statline")
 
     return {
         "name": core.get("name") or cfg["name"],
