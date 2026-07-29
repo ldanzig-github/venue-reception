@@ -29,9 +29,12 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-# Some ticketing sites 403 non-browser agents; use a realistic UA for those.
-_BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-               "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+# Ticketing sites' bot walls are picky: a bare "Mozilla/5.0" and, oddly, extra
+# Sec-Fetch/Accept headers both draw a 406 from Songkick, while a plain realistic
+# UA with NO extra headers passes (verified from the VPS). So: complete UA, and
+# send *only* the User-Agent header — matching a working curl request.
+_BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+               "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
 # Times are shown in US Eastern — matches how MLB schedules are published.
 _DISPLAY_TZ = ZoneInfo("America/New_York")
@@ -91,23 +94,10 @@ def _get(url: str) -> Optional[dict]:
         return None
 
 
-# Full browser-like headers. requests' default `Accept: */*` makes some bot
-# walls (Songkick) return 406 Not Acceptable; real browsers send a specific
-# text/html Accept, which gets through.
-_BROWSER_HEADERS = {
-    "User-Agent": _BROWSER_UA,
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Upgrade-Insecure-Requests": "1",
-}
-
-
 def _get_html(url: str) -> Optional[str]:
+    # Only User-Agent — adding Accept/Sec-Fetch headers makes Songkick 406.
     try:
-        r = requests.get(url, timeout=_HTTP_TIMEOUT, headers=_BROWSER_HEADERS)
+        r = requests.get(url, timeout=_HTTP_TIMEOUT, headers={"User-Agent": _BROWSER_UA})
         r.raise_for_status()
         return r.text
     except Exception as e:
