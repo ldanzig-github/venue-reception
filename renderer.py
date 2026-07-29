@@ -100,24 +100,38 @@ def _sparkline(series, kind="count", width=120, height=28):
     </svg>'''
 
 
-def _gauge_svg(pct, size=104):
-    """Donut gauge for a 0–100 percentage (e.g. playoff probability)."""
-    if pct is None:
-        return '<div class="gauge-empty">n/a</div>'
-    pct = max(0.0, min(100.0, float(pct)))
-    r, cx, cy = size / 2 - 9, size / 2, size / 2
-    import math
-    circ = 2 * math.pi * r
-    dash = circ * pct / 100
-    color = "var(--good)" if pct >= 60 else ("var(--warn)" if pct >= 35 else "var(--bad)")
-    return f'''<svg viewBox="0 0 {size} {size}" width="{size}" height="{size}" class="gauge">
-        <circle cx="{cx}" cy="{cy}" r="{r:.1f}" fill="none" stroke="var(--line)" stroke-width="9"/>
-        <circle cx="{cx}" cy="{cy}" r="{r:.1f}" fill="none" stroke="{color}" stroke-width="9"
-                stroke-linecap="round" stroke-dasharray="{dash:.1f} {circ:.1f}"
-                transform="rotate(-90 {cx} {cy})"/>
-        <text x="{cx}" y="{cy}" text-anchor="middle" dominant-baseline="central"
-              font-size="21" font-weight="800" fill="var(--ink)">{pct:.0f}<tspan font-size="11">%</tspan></text>
-    </svg>'''
+def _attendance_bars(series, avg_line=None, width=560, height=150):
+    """Vertical bars of avg attendance/game by season; current year highlighted."""
+    if not series:
+        return '<div class="gauge-empty">no attendance data</div>'
+    vals = [s["avg"] for s in series]
+    hi = max(vals) * 1.12
+    pad_t, pad_b, pad_x = 20, 22, 4
+    iw, ih = width - pad_x * 2, height - pad_t - pad_b
+    n = len(series)
+    slot = iw / n
+    bw = slot * 0.66
+    parts = []
+    if avg_line:
+        ly = pad_t + ih * (1 - avg_line / hi)
+        parts.append(f'<line x1="{pad_x}" y1="{ly:.1f}" x2="{pad_x+iw}" y2="{ly:.1f}" '
+                     f'stroke="var(--ink-faint)" stroke-width="1" stroke-dasharray="3 3" opacity="0.7"/>')
+        parts.append(f'<text x="{pad_x+iw}" y="{ly-3:.1f}" text-anchor="end" font-size="8.5" '
+                     f'fill="var(--ink-faint)">10-yr avg {avg_line:,}</text>')
+    for i, s in enumerate(series):
+        x = pad_x + slot * i + (slot - bw) / 2
+        bh = ih * (s["avg"] / hi)
+        y = pad_t + (ih - bh)
+        cur = s.get("is_current")
+        fill = "var(--good)" if cur else "#cbd5e1"
+        parts.append(f'<rect x="{x:.1f}" y="{y:.1f}" width="{bw:.1f}" height="{bh:.1f}" rx="2" fill="{fill}"/>')
+        parts.append(f"<text x=\"{x+bw/2:.1f}\" y=\"{height-7}\" text-anchor=\"middle\" font-size=\"9\" "
+                     f"fill=\"{'var(--good)' if cur else 'var(--ink-faint)'}\">'{str(s['year'])[2:]}</text>")
+        if cur:
+            parts.append(f'<text x="{x+bw/2:.1f}" y="{y-4:.1f}" text-anchor="middle" font-size="9.5" '
+                         f'font-weight="700" fill="var(--good)">{s["avg"]:,}</text>')
+    return (f'<svg viewBox="0 0 {width} {height}" width="100%" height="{height}" '
+            f'preserveAspectRatio="xMidYMid meet" class="bars">{"".join(parts)}</svg>')
 
 
 def _trend_chart(series, key="v", width=260, height=84, zero_line=False):
@@ -585,11 +599,56 @@ def _team_block(team):
                        f'<span class="nd">{escape(n.get("published",""))}</span>{escape(n.get("headline",""))}</a>')
     news_html = f'<div class="team-news"><div class="team-h">Recent news</div>{news_items}</div>' if news_items else ""
 
-    # ── Season trends: playoff-odds gauge + win% and games-ahead trajectories ──
+    # ── Non-team events at the home venue ──
+    venue_name = team.get("venue_name") or "the venue"
+    ve_items = ""
+    for e in (team.get("venue_events") or []):
+        url = e.get("url") or "#"
+        when = e.get("date", "") + (f' · {e["time"]}' if e.get("time") else "")
+        ve_items += (f'<a class="ve" href="{escape(url)}" target="_blank" rel="noopener">'
+                     f'<span class="ve-date">{escape(when)}</span>'
+                     f'<span class="ve-name">{escape(e.get("name",""))}</span></a>')
+    venue_events_html = (
+        f'<div class="venue-events"><div class="team-h">Also at {escape(venue_name)} · non-Rangers</div>{ve_items}</div>'
+        if ve_items else ""
+    )
+
+    # ── Live score banner (only while a game is in progress) ──
+    live = team.get("live") or {}
+    live_html = ""
+    if live:
+        outs = live.get("outs")
+        outs_txt = f" · {outs} out" if outs is not None else ""
+        bases = "".join("◆" if live.get(b) else "◇" for b in ("on_first", "on_second", "on_third"))
+        live_html = (
+            f'<div class="live-banner">'
+            f'<span class="live-dot">● LIVE</span>'
+            f'<span class="live-score">{escape(str(live.get("us_score","")))}–{escape(str(live.get("them_score","")))}</span>'
+            f'<span class="live-meta">{escape(live.get("home_away",""))} {escape(live.get("opponent",""))} · '
+            f'{escape(live.get("detail",""))}{escape(outs_txt)} <span class="bases">{bases}</span></span>'
+            f'</div>'
+        )
+
+    # ── Season trends: games-ahead trajectory + attendance-by-year bars ──
     charts = team.get("charts") or {}
-    win_series = charts.get("winpct") or []
     ahead_series = charts.get("games_ahead") or []
-    win_val = f'{win_series[-1]["v"]:.3f}'.lstrip("0") if win_series else "—"
+    att_years = charts.get("attendance_by_year") or []
+    att_current = charts.get("attendance_avg")
+    prior = [r["avg"] for r in att_years if not r.get("is_current")]
+    ten_yr_avg = round(sum(prior) / len(prior)) if prior else None
+    att_cell = ""
+    if att_years:
+        vs_txt = ""
+        if att_current and ten_yr_avg:
+            d = att_current - ten_yr_avg
+            vs_txt = f'vs 10-yr avg {ten_yr_avg:,} ({"+" if d >= 0 else "−"}{abs(d):,})'
+        att_cell = f"""<div class="trend-cell wide">
+            <div class="tc-title">Attendance per game · this year vs last 10</div>
+            <div class="tc-val">{att_current:,}</div>
+            <div class="tc-sub">{escape(vs_txt)}</div>
+            {_attendance_bars(att_years, avg_line=ten_yr_avg)}
+            <div class="tc-sub">Globe Life Field · avg attendance/game by season</div>
+          </div>"""
     ahead_last = ahead_series[-1]["v"] if ahead_series else None
     if ahead_last is None:
         ahead_txt, ahead_cls = "—", ""
@@ -604,22 +663,12 @@ def _team_block(team):
         <div class="team-h">Season trends</div>
         <div class="trend-grid">
           <div class="trend-cell">
-            <div class="tc-title">Playoff probability</div>
-            <div class="tc-gauge">{_gauge_svg(charts.get("playoff_pct"))}</div>
-            <div class="tc-sub">ESPN model, current</div>
-          </div>
-          <div class="trend-cell">
-            <div class="tc-title">Win %</div>
-            <div class="tc-val">{win_val}</div>
-            {_trend_chart(win_series)}
-            <div class="tc-sub">cumulative, season to date</div>
-          </div>
-          <div class="trend-cell">
             <div class="tc-title">Games ahead / behind</div>
             <div class="tc-val {ahead_cls}">{escape(ahead_txt)}</div>
             {_trend_chart(ahead_series, zero_line=True)}
             <div class="tc-sub">in AL West · dashed = tied for lead</div>
           </div>
+          {att_cell}
         </div>
       </div>"""
 
@@ -632,6 +681,7 @@ def _team_block(team):
       <div class="card-sub">{escape(sub)}</div>
     </header>
     <div class="card-body" style="display:block">
+      {live_html}
       <div class="team-odds">{odds_html}</div>
       {trends_html}
       <div class="team-cols">
@@ -643,6 +693,7 @@ def _team_block(team):
           <div class="team-h">Division standings</div>{stand_html}
         </div>
       </div>
+      {venue_events_html}
       {news_html}
     </div>
   </article>"""
@@ -1099,19 +1150,31 @@ body {
 .game .gr.win { color: var(--good); } .game .gr.loss { color: var(--bad); }
 .game .gt { color: var(--ink-soft); font-size: 11px; white-space: nowrap; }
 .game .gtv { display: block; font-size: 10.5px; color: var(--ink-faint); margin-top: 1px; }
+/* live score banner */
+.live-banner {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px;
+  padding: 8px 12px; margin-bottom: 14px;
+}
+.live-dot { font-size: 10px; font-weight: 800; letter-spacing: 0.04em; color: var(--bad); text-transform: uppercase;
+  animation: livepulse 1.6s ease-in-out infinite; }
+@keyframes livepulse { 0%,100% { opacity: 1; } 50% { opacity: 0.45; } }
+.live-score { font-size: 20px; font-weight: 800; color: var(--ink); }
+.live-meta { font-size: 12px; color: var(--ink-soft); }
+.live-meta .bases { letter-spacing: 1px; color: var(--warn); }
 /* season trends */
 .team-trends { margin-bottom: 14px; }
-.trend-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.trend-grid { display: grid; grid-template-columns: 1fr 1.7fr; gap: 12px; align-items: start; }
 @media (max-width: 720px) { .trend-grid { grid-template-columns: 1fr; } }
 .trend-cell { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: var(--card); text-align: center; }
+.trend-cell.wide { text-align: left; }
 .tc-title { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-faint); font-weight: 700; }
 .tc-val { font-size: 17px; font-weight: 800; color: var(--ink); margin: 3px 0; }
 .tc-val.good { color: var(--good); } .tc-val.bad { color: var(--bad); }
 .tc-sub { font-size: 9.5px; color: var(--ink-faint); margin-top: 3px; }
-.tc-gauge { margin: 4px 0; }
-svg.gauge { display: block; margin: 0 auto; }
 svg.trend { display: block; }
-.gauge-empty { font-size: 12px; color: var(--ink-faint); padding: 30px 0; }
+svg.bars { display: block; margin-top: 4px; }
+.gauge-empty { font-size: 12px; color: var(--ink-faint); padding: 30px 0; text-align: center; }
 table.stand { width: 100%; border-collapse: collapse; font-size: 12px; }
 table.stand th { text-align: right; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-faint); padding: 3px 6px; border-bottom: 1px solid var(--line); }
 table.stand th:first-child { text-align: left; }
@@ -1122,6 +1185,12 @@ table.stand tr.me td { background: #eef6ff; font-weight: 700; color: var(--ink);
 .team-news a { display: block; padding: 6px 0; border-bottom: 1px solid var(--line-soft); font-size: 12.5px; color: var(--ink); text-decoration: none; }
 .team-news a:hover { color: #1d4ed8; }
 .team-news .nd { color: var(--ink-faint); font-size: 10.5px; margin-right: 6px; }
+/* non-team venue events */
+.venue-events { margin-top: 14px; }
+.venue-events .ve { display: flex; align-items: baseline; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line-soft); text-decoration: none; }
+.venue-events .ve:hover .ve-name { color: #1d4ed8; }
+.venue-events .ve-date { flex: 0 0 118px; font-size: 11px; color: var(--ink-faint); }
+.venue-events .ve-name { font-size: 12.5px; color: var(--ink); font-weight: 600; }
 
 /* ── reviews column ── */
 .reviews-col { display: flex; flex-direction: column; gap: 6px; min-width: 0; }

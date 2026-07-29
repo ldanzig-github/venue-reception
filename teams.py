@@ -15,14 +15,21 @@ so we surface ESPN's model-based playoff probability (a %, not a moneyline).
 """
 from __future__ import annotations
 
+import json
 import logging
+import re
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
 
 import requests
 
 logger = logging.getLogger(__name__)
+
+# Some ticketing sites 403 non-browser agents; use a realistic UA for those.
+_BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+               "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")
 
 # Times are shown in US Eastern — matches how MLB schedules are published.
 _DISPLAY_TZ = ZoneInfo("America/New_York")
@@ -43,6 +50,20 @@ TEAMS = [
         "espn_id": "13",
         "division_name": "American League West",
         "division_abbrs": ["TEX", "HOU", "SEA", "ATH", "LAA"],  # for standings-by-date reconstruction
+        "attendance_espn_name": "Texas",   # how the team appears in ESPN's attendance table
+        # Avg home attendance/game for completed seasons (immutable; source: ESPN).
+        # Seeded so historical bars never depend on scraping www.espn.com (bot-gated).
+        # 2020 omitted — COVID season had no regular-season fans.
+        "attendance_history": {
+            "2016": 33461, "2017": 30960, "2018": 26013, "2019": 26333,
+            "2021": 26052, "2022": 24831, "2023": 31272, "2024": 32735, "2025": 29593,
+        },
+        # Non-team events at the home venue, parsed from ticketing sites' JSON-LD.
+        "venue_events": {
+            "venue_name": "Globe Life Field",
+            "ticketmaster_url": "https://www.ticketmaster.com/globe-life-field-tickets-arlington/venue/99338",
+            "songkick_url": "https://www.songkick.com/venues/4349753-globe-life-field",
+        },
         # ESPN futures market names for THIS team's league/division.
         "pennant_future": "MLB - American League - Winner",
         "pennant_label": "Win American League",
@@ -60,6 +81,89 @@ def _get(url: str) -> Optional[dict]:
     except Exception as e:
         logger.warning(f"teams: GET failed {url}: {e}")
         return None
+
+
+def _get_html(url: str) -> Optional[str]:
+    try:
+        r = requests.get(url, timeout=_HTTP_TIMEOUT, headers={"User-Agent": _BROWSER_UA})
+        r.raise_for_status()
+        return r.text
+    except Exception as e:
+        logger.warning(f"teams: HTML GET failed {url}: {e}")
+        return None
+
+
+def _jsonld_events(html: str) -> list[dict]:
+    """Extract schema.org Event entries from a page's JSON-LD blocks."""
+    if not html:
+        return []
+    out = []
+    for block in re.findall(r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>', html, re.S):
+        try:
+            data = json.loads(block)
+        except Exception:
+            continue
+        for it in (data if isinstance(data, list) else [data]):
+            if not isinstance(it, dict) or "Event" not in str(it.get("@type", "")):
+                continue
+            start = it.get("startDate") or ""
+            name = (it.get("name") or "").strip()
+            if not start or not name:
+                continue
+            url = it.get("url") or ""
+            if isinstance(url, dict):
+                url = url.get("@id") or url.get("url") or ""
+            out.append({"name": name, "start": start, "url": url})
+    return out
+
+
+def _fetch_venue_events(cfg: dict, team_name: str, limit: int = 6) -> list[dict]:
+    """Upcoming NON-team events at the home venue, merged from ticketing JSON-LD.
+
+    Ticketmaster (all event types) is primary; Songkick (concerts) is merged for
+    reach and resilience if one is blocked. The team's own home games are removed.
+    """
+    vcfg = cfg.get("venue_events") or {}
+    raw = []
+    for key in ("ticketmaster_url", "songkick_url"):
+        if vcfg.get(key):
+            raw += _jsonld_events(_get_html(vcfg[key]))
+
+    short = team_name.split()[-1].lower()  # 'rangers'
+    today = datetime.now(timezone.utc).date().isoformat()
+
+    def is_home_game(name: str) -> bool:
+        n = name.lower()
+        # Exclude actual team games ("<Team> vs ..." / "... at <Team>"), keep
+        # non-game happenings even if team-branded (5Ks, etc.).
+        return short in n and (" vs" in n or " at " in n or " v." in n)
+
+    seen, events = set(), []
+    for e in raw:
+        date_iso = e["start"][:10]
+        if date_iso < today or is_home_game(e["name"]):
+            continue
+        # Dedup the same event appearing on multiple sites: date + first two words.
+        norm = " ".join(re.sub(r"[^a-z0-9 ]", "", e["name"].lower()).split()[:2])
+        key = (date_iso, norm)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            dt = datetime.fromisoformat(e["start"].replace("Z", "+00:00"))
+            when = dt.strftime("%a, %b %-d")
+            time_txt = dt.strftime("%-I:%M %p") if (dt.hour or dt.minute) else ""
+        except Exception:
+            when, time_txt = date_iso, ""
+        events.append({
+            "date_iso": date_iso,
+            "date": when,
+            "time": time_txt,
+            "name": re.sub(r"\s+", " ", e["name"]).strip(),
+            "url": e["url"],
+        })
+    events.sort(key=lambda x: x["date_iso"])
+    return events[:limit]
 
 
 def _fmt_game_datetime(iso_utc: str) -> tuple[str, str]:
@@ -112,6 +216,8 @@ def _parse_event(ev: dict, abbr: str) -> Optional[dict]:
         "opponent": opp_name,
         "home_away": "vs" if home_away == "home" else "@",
         "home_away_raw": home_away,
+        "venue": (comp.get("venue") or {}).get("fullName"),
+        "attendance": comp.get("attendance"),
         "result": result,
         "won": won,
         "tv": None,   # filled in later from the scoreboard feed
@@ -242,6 +348,102 @@ def _games_ahead_series(sport_path: str, division_abbrs: list[str], team_abbr: s
             val = -((lead[1] - me[1]) + (me[2] - lead[2])) / 2
         series.append({"d": date, "v": round(val, 1)})
     return series
+
+
+def _attendance_series(games: list[dict]) -> list[dict]:
+    """Home-game attendance over the season (the team's own ballpark)."""
+    return [{"d": g["date_iso"], "v": int(g["attendance"])}
+            for g in games
+            if g.get("home_away_raw") == "home" and g.get("attendance")]
+
+
+# Completed-season attendance never changes, so cache it on disk forever and
+# only recompute the in-progress current year (from the live schedule).
+_ATT_CACHE = Path(__file__).parent / "data" / "attendance_history.json"
+
+
+def _load_att_cache() -> dict:
+    try:
+        return json.loads(_ATT_CACHE.read_text())
+    except Exception:
+        return {}
+
+
+def _save_att_cache(cache: dict) -> None:
+    _ATT_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    _ATT_CACHE.write_text(json.dumps(cache, indent=2))
+
+
+def _espn_year_avg(espn_name: str, year: int) -> Optional[int]:
+    """Avg home attendance/game for a team in a season, from ESPN's report."""
+    html = _get_html(f"https://www.espn.com/mlb/attendance/_/year/{year}")
+    if not html:
+        return None
+    txt = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", html))
+    # Row layout: <rank> <name> <homeGms> <homeTotal> <homeAvg> ...
+    m = re.search(rf"\b{re.escape(espn_name)}\s+\d+\s+[\d,]+\s+([\d,]+)", txt)
+    return int(m.group(1).replace(",", "")) if m else None
+
+
+def _attendance_by_year(cfg: dict, current_year: int, current_avg: Optional[int],
+                        n_years: int = 10) -> list[dict]:
+    """Avg attendance/game for the current year vs the prior `n_years`."""
+    espn_name = cfg.get("attendance_espn_name") or cfg["name"].split()[-1]
+    seed = {int(k): v for k, v in (cfg.get("attendance_history") or {}).items()}
+    cache = _load_att_cache()
+    team_cache = cache.get(cfg["espn_abbr"], {})
+    out, dirty = [], False
+    for yr in range(current_year - n_years, current_year + 1):
+        if yr == current_year:
+            avg = current_avg
+        elif yr in seed:                       # immutable reference data — no fetch
+            avg = seed[yr]
+        elif str(yr) in team_cache:
+            avg = team_cache[str(yr)]
+        else:                                  # best-effort fallback for un-seeded years
+            avg = _espn_year_avg(espn_name, yr)
+            if avg is not None:
+                team_cache[str(yr)] = avg
+                dirty = True
+        if avg:
+            out.append({"year": yr, "avg": int(avg), "is_current": yr == current_year})
+    if dirty:
+        cache[cfg["espn_abbr"]] = team_cache
+        _save_att_cache(cache)
+    return out
+
+
+def _fetch_live(sport_path: str, abbr: str) -> Optional[dict]:
+    """Live score if the team has a game in progress right now, else None."""
+    d = _get(f"https://site.api.espn.com/apis/site/v2/sports/{sport_path}/scoreboard")
+    for ev in (d or {}).get("events") or []:
+        comp = (ev.get("competitions") or [{}])[0]
+        status = (comp.get("status") or {}).get("type") or {}
+        if status.get("state") != "in":
+            continue
+        competitors = comp.get("competitors") or []
+        us = next((c for c in competitors if (c.get("team") or {}).get("abbreviation", "").upper() == abbr.upper()), None)
+        them = next((c for c in competitors if c is not us), None)
+        if not us or not them:
+            continue
+
+        def _sc(c):
+            s = c.get("score")
+            return s.get("value") if isinstance(s, dict) else s
+
+        sit = comp.get("situation") or {}
+        return {
+            "detail": status.get("shortDetail") or status.get("detail") or "In Progress",
+            "home_away": "vs" if us.get("homeAway") == "home" else "@",
+            "opponent": (them.get("team") or {}).get("displayName") or (them.get("team") or {}).get("abbreviation"),
+            "us_score": _sc(us),
+            "them_score": _sc(them),
+            "outs": sit.get("outs"),
+            "on_first": bool(sit.get("onFirst")),
+            "on_second": bool(sit.get("onSecond")),
+            "on_third": bool(sit.get("onThird")),
+        }
+    return None
 
 
 def _walk_find_team(node, abbr):
@@ -412,6 +614,11 @@ def _build_team(cfg: dict) -> dict:
     games_ahead = _games_ahead_series(
         cfg["sport_path"], cfg.get("division_abbrs") or [], cfg["espn_abbr"], games
     )
+    attendance = _attendance_series(games)
+    current_avg = round(sum(p["v"] for p in attendance) / len(attendance)) if attendance else None
+    attendance_by_year = _attendance_by_year(cfg, _SEASON, current_avg)
+    live = _fetch_live(cfg["sport_path"], cfg["espn_abbr"])
+    venue_events = _fetch_venue_events(cfg, cfg["name"])
     return {
         "name": core.get("name") or cfg["name"],
         "league": cfg["league"],
@@ -419,6 +626,9 @@ def _build_team(cfg: dict) -> dict:
         "record": core.get("record"),
         "standing_summary": core.get("standing_summary"),
         "division_name": cfg["division_name"],
+        "venue_name": (cfg.get("venue_events") or {}).get("venue_name"),
+        "venue_events": venue_events,
+        "live": live,
         "previous_games": schedule["previous"],
         "next_games": schedule["next"],
         "division_table": div["table"],
@@ -436,6 +646,8 @@ def _build_team(cfg: dict) -> dict:
             "playoff_pct": _pct_to_float(div["playoff_pct"]),
             "winpct": winpct,
             "games_ahead": games_ahead,
+            "attendance_avg": current_avg,
+            "attendance_by_year": attendance_by_year,
         },
         "news": news,
     }
