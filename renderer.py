@@ -668,23 +668,26 @@ def _team_block(team):
             return datetime.fromisoformat(iso).strftime("%b %-d")
         except Exception:
             return iso
-    last3 = charts.get("attendance_last3") or []
-    last3_txt = ""
-    if last3:
-        pieces = [f'{g["v"]:,} ({_fmt_when(g.get("d",""))})' for g in last3 if g.get("v")]
-        last3_txt = "Last 3 home games: " + " · ".join(pieces)
+    last5 = charts.get("attendance_last5") or []
+    last5_rows = "".join(
+        f'<span class="ald">{escape(_fmt_when(g.get("d","")))}</span>'
+        f'<span class="alv">{g["v"]:,}</span>'
+        for g in last5 if g.get("v")
+    )
     att_cell = ""
     if att_years:
         vs_txt = ""
         if att_current and ten_yr_avg:
             d = att_current - ten_yr_avg
-            vs_txt = f'vs 10-yr avg {ten_yr_avg:,} ({"+" if d >= 0 else "−"}{abs(d):,})'
+            vs_txt = f'{att_current:,} avg · {"+" if d >= 0 else "−"}{abs(d):,} vs 10-yr'
         att_cell = f"""<div class="trend-cell wide">
             <div class="tc-title">Attendance / game · vs last 10 yrs</div>
-            <div class="tc-val">{att_current:,}</div>
-            <div class="tc-sub">{escape(vs_txt)}</div>
-            {_attendance_bars(att_years, avg_line=ten_yr_avg)}
-            <div class="tc-sub">{escape(last3_txt)}</div>
+            <div class="tc-sub tc-lead">{escape(vs_txt)}</div>
+            {_attendance_bars(att_years, avg_line=ten_yr_avg, height=64)}
+            <div class="att-last5">
+              <div class="al-h">Last 5 home games</div>
+              <div class="al-grid">{last5_rows}</div>
+            </div>
           </div>"""
     ahead_last = ahead_series[-1]["v"] if ahead_series else None
     if ahead_last is None:
@@ -695,6 +698,30 @@ def _team_block(team):
         ahead_txt, ahead_cls = f"{ahead_last:g} behind", "bad"
     else:
         ahead_txt, ahead_cls = "tied for lead", ""
+
+    # ── Division-standings extras: performance stats not shown elsewhere ──
+    ds = team.get("division_stats") or {}
+
+    def _kpi(label, val, cls=""):
+        if not val:
+            return ""
+        return (f'<div class="skpi"><span class="skl">{escape(label)}</span>'
+                f'<span class="skv {cls}">{escape(str(val))}</span></div>')
+
+    rd = ds.get("run_diff") or ""
+    rd_cls = "good" if rd.startswith("+") else ("bad" if rd.startswith("-") else "")
+    streak = ds.get("streak") or ""
+    streak_cls = "good" if streak.startswith("W") else ("bad" if streak.startswith("L") else "")
+    rpg = f'{ds["rpg_for"]} / {ds["rpg_against"]}' if ds.get("rpg_for") and ds.get("rpg_against") else None
+    kpis = "".join([
+        _kpi("Run diff", rd, rd_cls),
+        _kpi("Last 10", ds.get("last10")),
+        _kpi("Streak", streak, streak_cls),
+        _kpi("Home", ds.get("home")),
+        _kpi("Road", ds.get("road")),
+        _kpi("Runs/G (for/vs)", rpg),
+    ])
+    std_kpis_html = f'<div class="std-kpis">{kpis}</div>' if kpis else ""
 
     trends_html = f"""<div class="team-trends">
         <div class="team-h">Season trends</div>
@@ -709,6 +736,7 @@ def _team_block(team):
           <div class="trend-cell stand-cell">
             <div class="tc-title">Division standings</div>
             {stand_html}
+            {std_kpis_html}
           </div>
         </div>
       </div>"""
@@ -1243,6 +1271,21 @@ table.stand th:first-child { text-align: left; }
 table.stand td { text-align: right; padding: 4px 6px; border-bottom: 1px solid var(--line-soft); color: var(--ink-soft); }
 table.stand td:first-child { text-align: left; color: var(--ink); }
 table.stand tr.me td { background: #eef6ff; font-weight: 700; color: var(--ink); }
+/* attendance: compact lead + right-aligned last-5 list (tabular figures line up) */
+.tc-lead { font-size: 12px; color: var(--ink); font-weight: 600; margin: 2px 0 4px; }
+.att-last5 { margin-top: 10px; }
+.al-h { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-faint); font-weight: 700; margin-bottom: 5px; }
+.al-grid { display: grid; grid-template-columns: auto 1fr; column-gap: 8px; font-size: 12px; }
+.al-grid .ald, .al-grid .alv { padding: 3px 0; border-bottom: 1px solid var(--line-soft); }
+.al-grid > :nth-last-child(-n+2) { border-bottom: 0; }
+.al-grid .ald { color: var(--ink-soft); }
+.al-grid .alv { text-align: right; font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+/* division-standings performance KPIs, filling what was empty space */
+.std-kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px 10px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line-soft); }
+.skpi { display: flex; flex-direction: column; }
+.skl { font-size: 9px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-faint); font-weight: 700; }
+.skv { font-size: 13px; font-weight: 700; color: var(--ink); font-variant-numeric: tabular-nums; }
+.skv.good { color: var(--good); } .skv.bad { color: var(--bad); }
 .team-news { margin-top: 0; }
 .team-news a { display: block; padding: 6px 0; border-bottom: 1px solid var(--line-soft); font-size: 12.5px; color: var(--ink); text-decoration: none; }
 .team-news a:hover { color: #1d4ed8; }

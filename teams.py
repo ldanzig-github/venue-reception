@@ -499,7 +499,7 @@ def _fetch_division_and_playoff(sport_path: str, division_name: str, abbr: str) 
                 return s
         return {}
 
-    table, playoff_pct = [], None
+    table, playoff_pct, team_stats = [], None, {}
     entries = []
     if group:
         entries = (group.get("standings") or {}).get("entries") or group.get("entries") or []
@@ -518,9 +518,21 @@ def _fetch_division_and_playoff(sport_path: str, division_name: str, abbr: str) 
         if row["is_team"]:
             pp = _stat(e, "playoffPercent")
             playoff_pct = pp.get("displayValue") or (f"{pp['value']:.1f}%" if pp.get("value") is not None else None)
+            # Extra performance stats to surface elsewhere-unseen context.
+            rd = _stat(e, "pointDifferential").get("value")
+            team_stats = {
+                "run_diff": (f"+{int(rd)}" if rd is not None and rd > 0 else (str(int(rd)) if rd is not None else None)),
+                "last10": _stat(e, "Last Ten Games").get("displayValue"),
+                "streak": _stat(e, "streak").get("displayValue"),
+                "home": _stat(e, "Home").get("displayValue"),
+                "road": _stat(e, "Road").get("displayValue"),
+                "rpg_for": _stat(e, "avgPointsFor").get("displayValue"),
+                "rpg_against": _stat(e, "avgPointsAgainst").get("displayValue"),
+                "magic": _stat(e, "magicNumberDivision").get("displayValue"),
+            }
     # Order the table by wins desc so it reads like a real standings block.
     table.sort(key=lambda r: float(r["pct"] or 0), reverse=True)
-    return {"table": table, "playoff_pct": playoff_pct}
+    return {"table": table, "playoff_pct": playoff_pct, "team_stats": team_stats}
 
 
 # Book preference — DraftKings first: it prices every market (incl. divisions),
@@ -737,7 +749,7 @@ def _build_team(cfg: dict) -> dict:
     )
     attendance = _attendance_series(games)
     current_avg = round(sum(p["v"] for p in attendance) / len(attendance)) if attendance else None
-    last3_home = attendance[-3:][::-1] if attendance else []   # most recent first
+    last5_home = attendance[-5:][::-1] if attendance else []   # most recent first
     attendance_by_year = _attendance_by_year(cfg, _SEASON, current_avg)
     live = _fetch_live(cfg["sport_path"], cfg["espn_abbr"])
     venue_events = _fetch_venue_events(cfg, cfg["name"])
@@ -768,6 +780,7 @@ def _build_team(cfg: dict) -> dict:
         "record": core.get("record"),
         "standing_summary": core.get("standing_summary"),
         "division_name": cfg["division_name"],
+        "division_stats": div.get("team_stats") or {},
         "venue_name": (cfg.get("venue_events") or {}).get("venue_name"),
         "venue_events": venue_events,
         "live": live,
@@ -790,7 +803,7 @@ def _build_team(cfg: dict) -> dict:
             "games_ahead": games_ahead,
             "attendance_avg": current_avg,
             "attendance_by_year": attendance_by_year,
-            "attendance_last3": last3_home,   # [{"d": iso, "v": count}] most-recent first
+            "attendance_last5": last5_home,   # [{"d": iso, "v": count}] most-recent first
         },
         "news": news,
     }
