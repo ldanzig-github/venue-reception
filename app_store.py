@@ -121,6 +121,16 @@ APPS = [
         "android_url": "https://play.google.com/store/apps/details?id=com.collektr.stream&hl=en_US",
         "insight_kind": "good",
     },
+    {
+        "key": "pure_poker",
+        "name": "Pure Poker",
+        "tagline": "Real money poker games",
+        "ios_id": "6741335064",
+        "android_id": None,
+        "ios_url":     "https://apps.apple.com/us/app/pure-poker-real-money-games/id6741335064",
+        "android_url": None,
+        "insight_kind": "good",
+    },
 ]
 
 

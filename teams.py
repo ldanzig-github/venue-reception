@@ -74,6 +74,13 @@ TEAMS = [
                 "https://www.jambase.com/venue/globe-life-field",
                 "https://www.songkick.com/venues/4349753-globe-life-field",
             ],
+            # Confirmed events the scraped feeds don't surface (found via research;
+            # non-concert events + ones beyond the ticketing pages' near-term window).
+            # Past-dated entries auto-drop; refresh as new events are announced.
+            "seed_events": [
+                {"date": "2026-09-25", "name": "Savannah Bananas (Banana Ball)",
+                 "url": "https://thesavannahbananas.com/"},
+            ],
         },
         # ESPN futures market names for THIS team's league/division.
         "pennant_future": "MLB - American League - Winner",
@@ -188,6 +195,14 @@ def _fetch_venue_events(cfg: dict, team_name: str, limit: int = 4) -> list[dict]
     sources = vcfg.get("sources") or [u for u in (vcfg.get("ticketmaster_url"), vcfg.get("songkick_url")) if u]
     for url in sources:
         raw += _jsonld_events(_get_html(url))
+
+    # Researched seed events the feeds miss (deduped against scraped results below).
+    for se in vcfg.get("seed_events") or []:
+        raw.append({
+            "name": se["name"],
+            "start": f'{se["date"]}T{se.get("time", "00:00:00")}',
+            "url": se.get("url", ""),
+        })
 
     short = team_name.split()[-1].lower()  # 'rangers'
     today = datetime.now(timezone.utc).date().isoformat()
