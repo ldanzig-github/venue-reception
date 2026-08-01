@@ -20,6 +20,7 @@ import logging
 import os
 import re
 from datetime import datetime, timezone
+from html import unescape
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
@@ -68,18 +69,14 @@ TEAMS = [
         # VPS) is covered by another source, so all events still populate.
         "venue_events": {
             "venue_name": "Globe Life Field",
+            # The venue's own events page is the fullest source (all event types,
+            # far-future); it's parsed with _parse_venue_page_events, not JSON-LD.
+            "venue_page": "https://globelifefield.com/stadium-events/",
+            # JSON-LD sources supply precise times / ticket links for near-term
+            # concerts (they win dedup over the venue page's date-only entries).
             "sources": [
                 "https://www.ticketmaster.com/globe-life-field-tickets-arlington/venue/99338",
-                "https://concertfix.com/concerts/arlington-tx+globe-life-field",
-                "https://www.jambase.com/venue/globe-life-field",
                 "https://www.songkick.com/venues/4349753-globe-life-field",
-            ],
-            # Confirmed events the scraped feeds don't surface (found via research;
-            # non-concert events + ones beyond the ticketing pages' near-term window).
-            # Past-dated entries auto-drop; refresh as new events are announced.
-            "seed_events": [
-                {"date": "2026-09-25", "name": "Savannah Bananas (Banana Ball)",
-                 "url": "https://thesavannahbananas.com/"},
             ],
         },
         # ESPN futures market names for THIS team's league/division.
@@ -133,6 +130,38 @@ def _jsonld_events(html: str) -> list[dict]:
             if isinstance(url, dict):
                 url = url.get("@id") or url.get("url") or ""
             out.append({"name": name, "start": start, "url": url})
+    return out
+
+
+_MONTHS = {m: i for i, m in enumerate(
+    ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], 1)}
+_VENUE_DATE_RE = re.compile(r"^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2}),\s+(20\d\d)")
+
+
+def _parse_venue_page_events(html: str, base_url: str) -> list[dict]:
+    """Parse Globe Life Field's stadium-events listing (server-rendered HTML).
+
+    Each event is a 'Mon D, YYYY' date followed by its title; multi-day events
+    repeat the title on start/end dates (deduped, earliest kept). This is the
+    fullest source — non-concert events and ones beyond ticketing-page windows.
+    """
+    if not html:
+        return []
+    lines = [re.sub(r"\s+", " ", l).strip() for l in unescape(re.sub(r"<[^>]+>", "\n", html)).split("\n")]
+    lines = [l for l in lines if l]
+    skip = {"-", "event details:", "texas rangers ticket information"}
+    out, seen = [], set()
+    for i, line in enumerate(lines):
+        m = _VENUE_DATE_RE.match(line)
+        if not m:
+            continue
+        name = next((c for c in lines[i + 1:i + 6]
+                     if not _VENUE_DATE_RE.match(c) and c.lower() not in skip and len(c) > 2), None)
+        if not name or name.lower() in seen:
+            continue
+        seen.add(name.lower())   # dedup multi-day events by title (page is chronological)
+        date_iso = f"{int(m.group(3))}-{_MONTHS[m.group(1)]:02d}-{int(m.group(2)):02d}"
+        out.append({"name": name, "start": f"{date_iso}T00:00:00", "url": base_url})
     return out
 
 
@@ -192,11 +221,16 @@ def _fetch_venue_events(cfg: dict, team_name: str, limit: int = 4) -> list[dict]
         else:
             logger.warning("teams: Ticketmaster API key set but venue id not resolved")
 
+    # JSON-LD ticketing sources first — their times/URLs win dedup for concerts.
     sources = vcfg.get("sources") or [u for u in (vcfg.get("ticketmaster_url"), vcfg.get("songkick_url")) if u]
     for url in sources:
         raw += _jsonld_events(_get_html(url))
 
-    # Researched seed events the feeds miss (deduped against scraped results below).
+    # The venue's own events page — fullest coverage (all event types, far-future).
+    if vcfg.get("venue_page"):
+        raw += _parse_venue_page_events(_get_html(vcfg["venue_page"]), vcfg["venue_page"])
+
+    # Optional researched seed events, if any configured (deduped below).
     for se in vcfg.get("seed_events") or []:
         raw.append({
             "name": se["name"],
