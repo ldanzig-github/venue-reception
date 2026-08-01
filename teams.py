@@ -72,11 +72,12 @@ TEAMS = [
             # The venue's own events page is the fullest source (all event types,
             # far-future); it's parsed with _parse_venue_page_events, not JSON-LD.
             "venue_page": "https://globelifefield.com/stadium-events/",
-            # JSON-LD sources supply precise times / ticket links for near-term
-            # concerts (they win dedup over the venue page's date-only entries).
+            # Ticketmaster JSON-LD supplies precise times / ticket links for
+            # near-term concerts (wins dedup over the venue page's date-only
+            # entries). Songkick dropped — it 406s the VPS and the venue page
+            # already covers the same events.
             "sources": [
                 "https://www.ticketmaster.com/globe-life-field-tickets-arlington/venue/99338",
-                "https://www.songkick.com/venues/4349753-globe-life-field",
             ],
         },
         # ESPN futures market names for THIS team's league/division.
