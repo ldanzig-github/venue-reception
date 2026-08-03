@@ -1056,36 +1056,15 @@ body {
 .tabs .tab.active .ct { background: #1e293b; color: #fff; }
 .panel.hidden { display: none; }
 
-/* ─── Poolhouse live shot counter (rolling odometer, page-styled) ─── */
+/* ─── Poolhouse live shot counter (embedded widget) ─── */
 .shot-counter { margin-bottom: 16px; }
 .shot-counter .team-h { margin-bottom: 6px; }
-.sc-card {
-  border: 1px solid var(--line); border-radius: 12px; background: var(--card);
-  box-shadow: var(--shadow); padding: 16px; text-align: center;
-}
-.sc-label { font-size: 13px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--ink); font-weight: 700; }
-.sc-sub { font-size: 10.5px; color: var(--ink-faint); margin-top: 10px; }
-/* odometer: digit windows with rolling reels */
-.odometer { display: inline-flex; gap: 3px; align-items: stretch; margin: 10px 0 2px; }
-.odo-digit {
-  position: relative; width: 40px; height: 58px; overflow: hidden; border-radius: 5px;
-  background: linear-gradient(#fbfcfe, #e8ecf2); border: 1px solid var(--line);
-  box-shadow: inset 0 7px 9px -7px rgba(15,23,42,.45), inset 0 -7px 9px -7px rgba(15,23,42,.45);
-}
-/* curved-cylinder shading over each wheel */
-.odo-digit::after {
-  content: ""; position: absolute; inset: 0; pointer-events: none;
-  background: linear-gradient(rgba(15,23,42,.16), rgba(15,23,42,0) 30%, rgba(15,23,42,0) 70%, rgba(15,23,42,.16));
-}
-.odo-comma { width: 15px; background: none; border: 0; box-shadow: none; overflow: visible; }
-.odo-comma::after { display: none; }
-.odo-reel { display: flex; flex-direction: column; will-change: transform; }
-.odo-cell { height: 58px; line-height: 58px; text-align: center; font-size: 38px; font-weight: 800; color: var(--ink); font-variant-numeric: tabular-nums; }
-.odo-comma .odo-cell { color: var(--ink-soft); }
-@media (max-width: 720px) {
-  .odo-digit { width: 30px; height: 46px; }
-  .odo-comma { width: 12px; }
-  .odo-cell { height: 46px; line-height: 46px; font-size: 30px; }
+/* Tall enough for the widget's own title + 150px odometer wheels so the
+   graphic is never clipped; no padding around it that could crop the frame. */
+.sc-frame {
+  width: 100%; height: 250px; border: 1px solid var(--line);
+  border-radius: 12px; display: block; background: #202020;
+  box-shadow: var(--shadow);
 }
 
 /* ─── hero KPI strip ─── */
@@ -1440,11 +1419,8 @@ table.stand tr.me td { background: #eef6ff; font-weight: 700; color: var(--ink);
   <section id="panel-venues" class="panel">
     <div class="shot-counter">
       <div class="team-h">Poolhouse · Live Shot Counter</div>
-      <div class="sc-card">
-        <div class="sc-label">Total Shots</div>
-        <div class="odometer" id="odo" aria-label="Total shots (live)"></div>
-        <div class="sc-sub" id="shotSub">connecting…</div>
-      </div>
+      <iframe class="sc-frame" src="https://stats.ls100.london.uk.poolhouse.support/counter/"
+              title="Poolhouse Live Shot Counter" scrolling="no" referrerpolicy="no-referrer"></iframe>
     </div>
     {{HERO_VENUES}}
     {{VENUES}}
@@ -1476,90 +1452,6 @@ function setTab(name) {
 document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => setTab(t.dataset.tab)));
 window.addEventListener('hashchange', () => setTab(location.hash.slice(1)));
 setTab(location.hash.slice(1) || 'venues');
-
-// Live shot counter rendered as a rolling odometer that ticks up in real time.
-(function () {
-  var root = document.getElementById('odo'), sub = document.getElementById('shotSub');
-  if (!root) return;
-  var TRANS = 'transform .4s cubic-bezier(.33,.0,.2,1)', TRANS_MS = 420;
-  var reels = [], vals = [], H = 58;
-  var base = null, baseTime = 0, ratePerMs = 0, lastInt = -1;
-
-  function cellH() { return window.matchMedia('(max-width: 720px)').matches ? 46 : 58; }
-
-  function build(n) {
-    root.innerHTML = ''; reels = []; vals = []; H = cellH();
-    for (var i = 0; i < n; i++) {
-      var digit = document.createElement('div'); digit.className = 'odo-digit';
-      var reel = document.createElement('div'); reel.className = 'odo-reel';
-      for (var k = 0; k <= 10; k++) {           // 0-9 plus a trailing 0 for seamless wrap
-        var cell = document.createElement('div'); cell.className = 'odo-cell';
-        cell.textContent = String(k % 10); reel.appendChild(cell);
-      }
-      digit.appendChild(reel); root.appendChild(digit);
-      reels.push(reel); vals.push(0);
-      var remaining = n - 1 - i;                 // thousands separators
-      if (remaining > 0 && remaining % 3 === 0) {
-        var comma = document.createElement('div'); comma.className = 'odo-digit odo-comma';
-        var cc = document.createElement('div'); cc.className = 'odo-cell'; cc.textContent = ',';
-        comma.appendChild(cc); root.appendChild(comma);
-      }
-    }
-  }
-
-  function setDigit(i, nd) {
-    var reel = reels[i], cur = vals[i]; vals[i] = nd;
-    if (nd >= cur) {                              // simple forward roll
-      reel.style.transition = TRANS;
-      reel.style.transform = 'translateY(' + (-nd * H) + 'px)';
-    } else {                                      // wrap 9→0: roll down through the trailing 0, then reset
-      reel.style.transition = TRANS;
-      reel.style.transform = 'translateY(' + (-10 * H) + 'px)';
-      (function (reel, nd) {
-        setTimeout(function () {
-          reel.style.transition = 'none';
-          reel.style.transform = 'translateY(0px)';
-          reel.offsetHeight;                      // force reflow so the next transition animates
-          if (nd > 0) { reel.style.transition = TRANS; reel.style.transform = 'translateY(' + (-nd * H) + 'px)'; }
-        }, TRANS_MS);
-      })(reel, nd);
-    }
-  }
-
-  function updateDigits(v) {
-    var s = String(Math.max(0, v));
-    if (s.length !== reels.length) build(s.length);
-    for (var i = 0; i < reels.length; i++) { var nd = +s[i]; if (nd !== vals[i]) setDigit(i, nd); }
-  }
-
-  function poll() {
-    fetch('/api/shot_counter', { cache: 'no-store' })
-      .then(function (r) { return r.json(); })
-      .then(function (d) {
-        if (typeof d.totalShotsToday !== 'number') return;
-        var prev = typeof d.totalShots5MinsAgo === 'number' ? d.totalShots5MinsAgo : d.totalShotsToday;
-        ratePerMs = (d.msElapsed > 0 && d.totalShotsToday > prev) ? (d.totalShotsToday - prev) / d.msElapsed : 0;
-        base = d.totalShotsToday; baseTime = performance.now();
-        if (sub) sub.textContent = 'today' + (d.lastUpdated ? (' · updated ' + d.lastUpdated) : '');
-      })
-      .catch(function () { if (sub && base === null) sub.textContent = 'counter unavailable'; });
-  }
-
-  function frame() {
-    if (base !== null) {
-      var v = Math.floor(base + ratePerMs * (performance.now() - baseTime));
-      if (v > lastInt) { lastInt = v; updateDigits(v); }   // only ever roll upward
-    }
-    requestAnimationFrame(frame);
-  }
-
-  window.addEventListener('resize', function () {           // keep reels aligned if the digit height changes
-    var nh = cellH(); if (nh === H) return; H = nh;
-    for (var i = 0; i < reels.length; i++) { reels[i].style.transition = 'none'; reels[i].style.transform = 'translateY(' + (-vals[i] * H) + 'px)'; }
-  });
-
-  poll(); setInterval(poll, 5000); requestAnimationFrame(frame);
-})();
 </script>
 </body></html>
 """

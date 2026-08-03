@@ -10,10 +10,8 @@ from __future__ import annotations
 import hmac
 import logging
 import os
-import time
 from pathlib import Path
 
-import requests
 from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
 from flask import Flask, Response, request
@@ -126,34 +124,6 @@ def root():
 @app.route("/healthz")
 def healthz():
     return {"status": "ok", "html_exists": HTML_PATH.exists()}
-
-
-# Same-origin proxy for the Poolhouse live shot counter — the upstream JSON has
-# no CORS header, so the dashboard's JS can't read it directly. Cached briefly
-# so many viewers polling every few seconds don't hammer the upstream.
-_SHOT_COUNTER_URL = "https://stats.ls100.london.uk.poolhouse.support/counter/refresh.asp"
-_shot_cache = {"ts": 0.0, "body": None}
-
-
-@app.route("/api/shot_counter")
-def shot_counter():
-    if not _check_basic_auth():
-        return _basic_auth_response()
-    now = time.time()
-    if _shot_cache["body"] is None or now - _shot_cache["ts"] > 2.0:
-        try:
-            r = requests.get(_SHOT_COUNTER_URL, timeout=8,
-                             headers={"User-Agent": "venue-reception/1.0"})
-            r.raise_for_status()
-            _shot_cache["body"] = r.text
-            _shot_cache["ts"] = now
-        except Exception:
-            log.warning("shot_counter upstream fetch failed")
-            if _shot_cache["body"] is None:
-                return Response('{"error":"upstream unavailable"}', 502,
-                                {"Content-Type": "application/json"})
-    return Response(_shot_cache["body"], 200,
-                    {"Content-Type": "application/json", "Cache-Control": "no-store"})
 
 
 # Dashboard route — gated by path token (mandatory) + optional basic auth.
