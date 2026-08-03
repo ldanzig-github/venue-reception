@@ -1056,14 +1056,17 @@ body {
 .tabs .tab.active .ct { background: #1e293b; color: #fff; }
 .panel.hidden { display: none; }
 
-/* ─── Poolhouse live shot counter (embedded widget) ─── */
+/* ─── Poolhouse live shot counter (native widget, page-styled) ─── */
 .shot-counter { margin-bottom: 16px; }
 .shot-counter .team-h { margin-bottom: 6px; }
-.sc-frame {
-  width: 100%; height: 190px; border: 1px solid var(--line);
-  border-radius: 12px; display: block; background: #202020;
-  box-shadow: var(--shadow);
+.sc-card {
+  border: 1px solid var(--line); border-radius: 12px; background: var(--card);
+  box-shadow: var(--shadow); padding: 16px; text-align: center;
 }
+.sc-label { font-size: 13px; text-transform: uppercase; letter-spacing: 0.14em; color: var(--ink); font-weight: 700; }
+.sc-value { font-size: 48px; font-weight: 800; color: var(--ink); font-variant-numeric: tabular-nums; line-height: 1.15; margin: 2px 0; }
+.sc-sub { font-size: 10.5px; color: var(--ink-faint); }
+@media (max-width: 720px) { .sc-value { font-size: 36px; } }
 
 /* ─── hero KPI strip ─── */
 .hero {
@@ -1409,9 +1412,11 @@ table.stand tr.me td { background: #eef6ff; font-weight: 700; color: var(--ink);
 
   <section class="shot-counter">
     <div class="team-h">Poolhouse · Live Shot Counter</div>
-    <iframe class="sc-frame" src="https://stats.ls100.london.uk.poolhouse.support/counter/"
-            title="Poolhouse Live Shot Counter" loading="lazy" scrolling="no"
-            referrerpolicy="no-referrer"></iframe>
+    <div class="sc-card">
+      <div class="sc-label">Total Shots</div>
+      <div class="sc-value" id="shotCount">—</div>
+      <div class="sc-sub" id="shotSub">connecting…</div>
+    </div>
   </section>
 
   <nav class="tabs" role="tablist">
@@ -1452,6 +1457,31 @@ function setTab(name) {
 document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => setTab(t.dataset.tab)));
 window.addEventListener('hashchange', () => setTab(location.hash.slice(1)));
 setTab(location.hash.slice(1) || 'venues');
+
+// Live shot counter: poll the same-origin proxy, tick the number up smoothly.
+(function () {
+  var el = document.getElementById('shotCount'), sub = document.getElementById('shotSub');
+  if (!el) return;
+  var base = null, baseTime = 0, ratePerMs = 0;
+  function fmt(n) { return Math.max(0, Math.floor(n)).toLocaleString('en-US'); }
+  function poll() {
+    fetch('/api/shot_counter', { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (typeof d.totalShotsToday !== 'number') return;
+        var prev = typeof d.totalShots5MinsAgo === 'number' ? d.totalShots5MinsAgo : d.totalShotsToday;
+        ratePerMs = (d.msElapsed > 0 && d.totalShotsToday > prev) ? (d.totalShotsToday - prev) / d.msElapsed : 0;
+        base = d.totalShotsToday; baseTime = performance.now();
+        if (sub) sub.textContent = 'today' + (d.lastUpdated ? (' · updated ' + d.lastUpdated) : '');
+      })
+      .catch(function () { if (sub && base === null) sub.textContent = 'counter unavailable'; });
+  }
+  function tick() {
+    if (base !== null) el.textContent = fmt(base + ratePerMs * (performance.now() - baseTime));
+    requestAnimationFrame(tick);
+  }
+  poll(); setInterval(poll, 5000); requestAnimationFrame(tick);
+})();
 </script>
 </body></html>
 """
