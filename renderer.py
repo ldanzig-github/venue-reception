@@ -1056,6 +1056,15 @@ body {
 .tabs .tab.active .ct { background: #1e293b; color: #fff; }
 .panel.hidden { display: none; }
 
+/* ─── Poolhouse live shot counter (embedded widget) ─── */
+.shot-counter { margin-bottom: 16px; }
+.shot-counter .team-h { margin-bottom: 6px; }
+.sc-frame {
+  width: 100%; height: 190px; border: 1px solid var(--line);
+  border-radius: 12px; display: block; background: #202020;
+  box-shadow: var(--shadow);
+}
+
 /* ─── hero KPI strip ─── */
 .hero {
   display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
@@ -1397,6 +1406,13 @@ table.stand tr.me td { background: #eef6ff; font-weight: 700; color: var(--ink);
       <div><strong>Reloaded:</strong> <span id="now"></span> · refresh in 5min</div>
     </div>
   </header>
+
+  <section class="shot-counter">
+    <div class="team-h">Poolhouse · Live Shot Counter</div>
+    <iframe class="sc-frame" src="https://stats.ls100.london.uk.poolhouse.support/counter/"
+            title="Poolhouse Live Shot Counter" loading="lazy" scrolling="no"
+            referrerpolicy="no-referrer"></iframe>
+  </section>
 
   <nav class="tabs" role="tablist">
     <button class="tab" data-tab="venues" role="tab">Venues<span class="ct">{{VENUES_COUNT}}</span></button>
