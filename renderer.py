@@ -182,52 +182,6 @@ def _trend_chart(series, key="v", width=260, height=84, zero_line=False):
     </svg>'''
 
 
-def _status_pill(trends, count, current_rating, positive_pct=None):
-    """
-    Categorize entity momentum.
-    Order of checks (most-informative first):
-      • NEW       — fewer than 20 lifetime reviews
-      • SLIPPING  — rating dropped ≥0.10 over any window  OR  recent positive% < 40
-      • WATCH     — recent positive% 40–64
-      • HOT       — count growing >2% / week
-      • GROWING   — count growing but slower
-      • STEADY    — no notable signal
-    """
-    # New: small total count
-    if count is not None and count < 20:
-        return ('NEW', 'new', 'building review base')
-
-    # Trend-based signals
-    week_delta = None
-    for label, d in (trends or {}).items():
-        if 'd' in label and d.get('count_delta') is not None:
-            week_delta = d['count_delta']
-            break
-    rating_drift = None
-    for label in ('30d', '7d', '24h'):
-        d = (trends or {}).get(label)
-        if d and d.get('rating_delta') not in (None, 0):
-            rating_drift = d['rating_delta']
-            break
-
-    if rating_drift is not None and rating_drift <= -0.10:
-        return ('SLIPPING', 'slipping', f'rating dropping {rating_drift:+.2f}')
-
-    # Sentiment-based signals (fill the gap before history accumulates)
-    if positive_pct is not None:
-        if positive_pct < 40:
-            return ('SLIPPING', 'slipping', f'recent reviews only {positive_pct}% positive')
-        if positive_pct < 65:
-            return ('WATCH', 'watch', f'recent reviews {positive_pct}% positive')
-
-    # Velocity-based signals
-    if week_delta is not None and count and week_delta > 0 and week_delta / count > 0.02:
-        return ('HOT', 'hot', f'+{week_delta} reviews/wk')
-    if week_delta is not None and week_delta > 0:
-        return ('GROWING', 'growing', f'+{week_delta} reviews this week')
-    return ('STEADY', 'steady', 'stable')
-
-
 # ─── trend badges ──────────────────────────────────────────────────────────
 _WINDOW_RE = __import__("re").compile(r"^(\d+)([mhd])$")
 _UNIT_SECONDS = {"m": 60, "h": 3600, "d": 86400}
@@ -333,13 +287,6 @@ def _venue_block(meta, data):
 
     primary_rating = g.get("rating")
     primary_count = g.get("count")
-    status_label, status_cls, status_hint = _status_pill(
-        data.get("trends") or {},
-        int(primary_count) if primary_count not in (None, "—") and str(primary_count).isdigit() else None,
-        float(primary_rating) if primary_rating not in (None, "—") else None,
-        positive_pct=analytics.get("positive_pct"),
-    )
-
     pills = []
     if g.get("rating"):
         pills.append(_score_pill("g", "G", g, meta["google_url"]))
@@ -383,7 +330,6 @@ def _venue_block(meta, data):
     <header class="card-h">
       <div class="card-title">
         <h3>{escape(meta['name'])}</h3>
-        <span class="status {status_cls}" title="{escape(status_hint)}">{status_label}</span>
       </div>
       <div class="card-sub">{escape(meta['addr'])}</div>
     </header>
@@ -468,13 +414,6 @@ def _app_block(meta, data):
 
     primary_rating = combined.get("rating") or ios.get("rating") or android.get("rating")
     primary_count = combined.get("count") or ios.get("count") or android.get("count")
-    status_label, status_cls, status_hint = _status_pill(
-        data.get("trends") or {},
-        int(primary_count) if primary_count else None,
-        float(primary_rating) if primary_rating else None,
-        positive_pct=analytics.get("positive_pct"),
-    )
-
     pills = []
     if ios.get("rating") is not None:
         pills.append(_score_pill("ios", "iOS", ios, meta.get("ios_url","#")))
@@ -523,7 +462,6 @@ def _app_block(meta, data):
     <header class="card-h">
       <div class="card-title">
         <h3>{escape(meta['name'])}</h3>
-        <span class="status {status_cls}" title="{escape(status_hint)}">{status_label}</span>
       </div>
       <div class="card-sub">{sub}</div>
     </header>
@@ -1117,12 +1055,6 @@ body {
   font-size: 10px; font-weight: 700; padding: 2px 7px;
   border-radius: 4px; text-transform: uppercase; letter-spacing: 0.05em;
 }
-.status.hot      { background: #fff1eb; color: var(--hot); }
-.status.growing  { background: #ecfdf5; color: var(--good); }
-.status.steady   { background: #f1f5f9; color: var(--ink-soft); }
-.status.slipping { background: #fef2f2; color: var(--bad); }
-.status.watch    { background: #fef3c7; color: var(--warn); }
-.status.new      { background: #fef3c7; color: #92400e; }
 .card-sub { font-size: 11px; color: var(--ink-faint); margin-top: 2px; }
 
 .card-body {
