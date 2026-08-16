@@ -91,6 +91,16 @@ APPS = [
         "insight_kind": "good",
     },
     {
+        "key": "pullz",
+        "name": "Pullz",
+        "tagline": "Trading card pack openings",
+        "ios_id": "6768253096",
+        "android_id": None,
+        "ios_url":     "https://apps.apple.com/us/app/pullz/id6768253096",
+        "android_url": None,
+        "insight_kind": "good",
+    },
+    {
         "key": "rips_by_triumph",
         "name": "Rips by Triumph",
         "tagline": "Trading card pack openings",

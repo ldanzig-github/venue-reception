@@ -65,39 +65,45 @@ def _stars(rating, max_stars=5):
     return f'{filled}<span class="muted">{muted}</span>' if muted else filled
 
 
-def _sparkline(series, kind="count", width=120, height=28):
+def _pace_block(pace: dict, noun: str = "reviews", width=160, height=30):
     """
-    Render a tiny inline SVG sparkline from a list of {ts, rating, count}.
-    `kind` is "count" (cumulative growth) or "rating" (small fluctuations).
+    Review-pace panel: weekly rate + how many new reviews landed each day.
+
+    Replaces the old cumulative sparkline, which was structurally flat — a
+    lifetime total in the hundreds barely moves, so the line said nothing.
+    The daily *arrival* rate is the signal underneath it.
     """
-    pts = [p.get(kind) for p in (series or [])]
-    pts = [p for p in pts if p is not None]
-    if len(pts) < 2:
-        return f'<div class="spark empty" style="width:{width}px;height:{height}px;"></div>'
+    buckets = (pace or {}).get("buckets") or []
+    if not buckets:
+        return (f'<div class="pace empty">review pace — needs 2+ days of history</div>')
 
-    lo, hi = min(pts), max(pts)
-    rng = (hi - lo) or 1
-    n = len(pts)
-    # Map each point into the viewBox
-    coords = []
-    for i, v in enumerate(pts):
-        x = (i / (n - 1)) * width
-        y = height - ((v - lo) / rng) * (height - 4) - 2
-        coords.append(f"{x:.1f},{y:.1f}")
-    poly = " ".join(coords)
-    last_x, last_y = coords[-1].split(",")
+    vals = [b.get("new") or 0 for b in buckets]
+    hi = max(vals) or 1
+    n = len(vals)
+    slot = width / n
+    bw = max(3.0, slot * 0.68)
+    bars = []
+    for i, (b, v) in enumerate(zip(buckets, vals)):
+        x = slot * i + (slot - bw) / 2
+        last = i == n - 1
+        if v > 0:
+            bh = max(2.5, (height - 2) * (v / hi))
+            fill = "var(--good)" if last else "#94a3b8"
+        else:
+            bh, fill = 2.0, "var(--line)"
+        bars.append(
+            f'<rect x="{x:.1f}" y="{height - bh:.1f}" width="{bw:.1f}" height="{bh:.1f}" fill="{fill}">'
+            f'<title>{escape(b.get("day", ""))} · {v:g} new</title></rect>'
+        )
 
-    # Fill area beneath the line
-    area = f"M0,{height} L{poly.replace(' ', ' L')} L{width},{height} Z"
-
-    color = "var(--good)" if (pts[-1] >= pts[0]) else "var(--bad)"
-    fill = "rgba(34,197,94,0.10)" if (pts[-1] >= pts[0]) else "rgba(220,38,38,0.10)"
-
-    return f'''<svg class="spark" viewBox="0 0 {width} {height}" preserveAspectRatio="none" width="{width}" height="{height}">
-        <path d="{area}" fill="{fill}" stroke="none"/>
-        <polyline points="{poly}" fill="none" stroke="{color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-        <circle cx="{last_x}" cy="{last_y}" r="2" fill="{color}"/>
-    </svg>'''
+    per_week = (pace or {}).get("per_week")
+    rate = f"{per_week:g}" if isinstance(per_week, (int, float)) else "—"
+    shown = round(sum(vals))
+    return f'''<div class="pace">
+      <div class="pace-head"><b>{rate}</b> new {escape(noun)} / wk</div>
+      <svg class="pace-bars" viewBox="0 0 {width} {height}" width="{width}" height="{height}">{"".join(bars)}</svg>
+      <div class="pace-foot">{fmt_count(shown)} new · last {n}d</div>
+    </div>'''
 
 
 def _attendance_bars(series, avg_line=None, width=320, height=150):
@@ -176,7 +182,7 @@ def _trend_chart(series, key="v", width=260, height=84, zero_line=False):
     </svg>'''
 
 
-def _status_pill(trends, sparkline, count, current_rating, positive_pct=None):
+def _status_pill(trends, count, current_rating, positive_pct=None):
     """
     Categorize entity momentum.
     Order of checks (most-informative first):
@@ -323,12 +329,12 @@ def _venue_block(meta, data):
         dist_dict = {str(s): n for s, n in zip([5,4,3,2,1], dist)}
     else:
         dist_dict = dist or {}
-    sparkline_html = _sparkline(data.get("sparkline") or [], "count")
+    pace_html = _pace_block(data.get("pace") or {}, "reviews")
 
     primary_rating = g.get("rating")
     primary_count = g.get("count")
     status_label, status_cls, status_hint = _status_pill(
-        data.get("trends") or {}, data.get("sparkline") or [],
+        data.get("trends") or {},
         int(primary_count) if primary_count not in (None, "—") and str(primary_count).isdigit() else None,
         float(primary_rating) if primary_rating not in (None, "—") else None,
         positive_pct=analytics.get("positive_pct"),
@@ -386,7 +392,7 @@ def _venue_block(meta, data):
         <div class="primary">
           <div class="primary-num">{escape(str(primary_rating)) if primary_rating else '—'}<small>/5</small></div>
           <div class="primary-sub">{fmt_count(primary_count)} Google reviews</div>
-          <div class="spark-wrap">{sparkline_html}</div>
+          {pace_html}
         </div>
         <div class="scores-row">{' '.join(pills)}</div>
         {_trends_row(data.get("trends") or {})}
@@ -458,12 +464,12 @@ def _app_block(meta, data):
         if r_total > 0:
             dist = recent
             dist_label = f"over last ~{fmt_count(r_total)} reviews"
-    sparkline_html = _sparkline(data.get("sparkline") or [], "count")
+    pace_html = _pace_block(data.get("pace") or {}, "ratings")
 
     primary_rating = combined.get("rating") or ios.get("rating") or android.get("rating")
     primary_count = combined.get("count") or ios.get("count") or android.get("count")
     status_label, status_cls, status_hint = _status_pill(
-        data.get("trends") or {}, data.get("sparkline") or [],
+        data.get("trends") or {},
         int(primary_count) if primary_count else None,
         float(primary_rating) if primary_rating else None,
         positive_pct=analytics.get("positive_pct"),
@@ -526,7 +532,7 @@ def _app_block(meta, data):
         <div class="primary">
           <div class="primary-num">{rating_str}<small>/5</small></div>
           <div class="primary-sub">{fmt_count(primary_count)} total ratings</div>
-          <div class="spark-wrap">{sparkline_html}</div>
+          {pace_html}
         </div>
         <div class="scores-row">{' '.join(pills)}</div>
         {_trends_row(data.get("trends") or {})}
@@ -1136,9 +1142,18 @@ body {
 }
 .primary-num small { font-size: 16px; color: var(--ink-soft); font-weight: 500; }
 .primary-sub { font-size: 11px; color: var(--ink-faint); margin-top: 2px; }
-.spark-wrap { margin-top: 6px; height: 28px; }
-.spark { display: block; }
-.spark.empty { background: var(--line-soft); border-radius: 4px; }
+.pace { margin-top: 8px; }
+.pace-head { font-size: 10.5px; color: var(--ink-faint); line-height: 1.2; }
+.pace-head b { font-size: 14px; font-weight: 700; color: var(--ink); }
+.pace-bars { display: block; margin-top: 3px; }
+.pace-bars rect { transition: opacity 0.15s; }
+.pace-bars:hover rect { opacity: 0.75; }
+.pace-bars rect:hover { opacity: 1; }
+.pace-foot { font-size: 9.5px; color: var(--ink-faint); margin-top: 2px; }
+.pace.empty {
+  margin-top: 8px; font-size: 10.5px; color: var(--ink-faint);
+  font-style: italic; padding: 6px 0;
+}
 
 /* ── score pills ── */
 .scores-row { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }

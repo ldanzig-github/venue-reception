@@ -145,24 +145,49 @@ def _compute_entity_trends(
     return out
 
 
-def _sparkline_series(history: list[dict], section: str, key: str, max_points: int = 30) -> list[dict]:
-    """Return the most recent N {ts, rating, count} points for an entity's sparkline."""
-    series = []
-    for entry in history:
-        e = (entry.get(section) or {}).get(key) or {}
-        if e.get("count") is None and e.get("rating") is None:
-            continue
-        series.append({
-            "ts": entry["_ts"].isoformat(),
-            "rating": _to_float(e.get("rating")),
-            "count": _to_int(e.get("count")),
-        })
-    return series[-max_points:]
+def _pace_series(history: list[dict], section: str, key: str, days: int = 14) -> dict:
+    """
+    How fast an entity is *earning* reviews — the useful signal a cumulative
+    line hides (a total that only ever creeps up looks flat until it steps).
+
+    Returns {"buckets": [{"day", "new"}], "per_week", "span_days", "total"}:
+    one bucket per calendar day over the last `days`, plus the observed weekly
+    pace across the whole retained history. Empty dict when there is less than
+    two days of history to difference.
+    """
+    by_day: dict = {}
+    for entry in history:  # oldest → newest, so the last count of a day wins
+        c = _to_int(((entry.get(section) or {}).get(key) or {}).get("count"))
+        if c is not None:
+            by_day[entry["_ts"].date()] = c
+    if len(by_day) < 2:
+        return {}
+
+    observed = sorted(by_day)
+    # New reviews per day. Scrape gaps are spread evenly across the missing
+    # days rather than dumped on the day we happened to look — otherwise an
+    # outage renders as a fake spike.
+    buckets = []
+    for prev, cur in zip(observed, observed[1:]):
+        gap = max(1, (cur - prev).days)
+        share = max(0, by_day[cur] - by_day[prev]) / gap
+        for i in range(gap):
+            buckets.append({"day": (prev + timedelta(days=i + 1)).isoformat(),
+                            "new": round(share, 2)})
+
+    span_days = max(1, (observed[-1] - observed[0]).days)
+    total = max(0, by_day[observed[-1]] - by_day[observed[0]])
+    return {
+        "buckets": buckets[-days:],
+        "per_week": round(total * 7 / span_days, 1),
+        "span_days": span_days,
+        "total": total,
+    }
 
 
 def enrich_with_trends(data: dict) -> dict:
     """
-    Mutate `data` in place: add a "trends" sub-dict + "sparkline" series
+    Mutate `data` in place: add a "trends" sub-dict + "pace" block
     to each venue and app, and a "summary" block per section.
     """
     history = _read_history()
@@ -172,12 +197,12 @@ def enrich_with_trends(data: dict) -> dict:
     for key, v in venues.items():
         google_block = v.get("google") or {}
         v["trends"] = _compute_entity_trends("venues", key, google_block, history) if history else {}
-        v["sparkline"] = _sparkline_series(history, "venues", key) if history else []
+        v["pace"] = _pace_series(history, "venues", key) if history else {}
 
     for key, a in apps.items():
         combined = a.get("combined") or {}
         a["trends"] = _compute_entity_trends("apps", key, combined, history) if history else {}
-        a["sparkline"] = _sparkline_series(history, "apps", key) if history else []
+        a["pace"] = _pace_series(history, "apps", key) if history else {}
 
     data["summary"] = {
         "venues": _section_summary(venues, history, "venues", "google"),
