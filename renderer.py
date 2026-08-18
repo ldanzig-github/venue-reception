@@ -560,6 +560,27 @@ def _team_block(team):
     stand_html = (f'<table class="stand"><thead><tr><th>{escape(team.get("division_name",""))}</th>'
                   f'<th>W</th><th>L</th><th>PCT</th><th>GB</th></tr></thead><tbody>{rows}</tbody></table>')
 
+    # Wild card: same table shape, plus a rule under the last qualifying spot.
+    wc_rows = ""
+    wc_table = team.get("wildcard_table") or []
+    spots = team.get("wildcard_spots") or 3
+    for i, r in enumerate(wc_table):
+        cls = ["me"] if r.get("is_team") else []
+        if r.get("in_field"):
+            cls.append("in")
+        if i == spots - 1:
+            cls.append("cutline")
+        attr = f' class="{" ".join(cls)}"' if cls else ""
+        wc_rows += (f'<tr{attr}><td>{escape(str(r.get("name","")))}</td>'
+                    f'<td>{escape(str(r.get("wins","")))}</td><td>{escape(str(r.get("losses","")))}</td>'
+                    f'<td>{escape(str(r.get("pct","")))}</td><td>{escape(str(r.get("gb","")))}</td></tr>')
+    wc_html = ""
+    if wc_rows:
+        wc_html = (f'<table class="stand wc"><thead><tr><th>{escape(team.get("wildcard_label",""))}</th>'
+                   f'<th>W</th><th>L</th><th>PCT</th><th>GB</th></tr></thead>'
+                   f'<tbody>{wc_rows}</tbody></table>'
+                   f'<div class="tc-sub">line = last of {spots} wild cards · GB off that spot</div>')
+
     news = list(team.get("news") or [])
     news_items = ""
     for n in news:
@@ -633,7 +654,9 @@ def _team_block(team):
               <div class="al-grid">{last5_rows}</div>
             </div>
           </div>"""
-    ahead_last = ahead_series[-1]["v"] if ahead_series else None
+    ahead_last = charts.get("games_ahead_now")
+    if ahead_last is None and ahead_series:
+        ahead_last = ahead_series[-1]["v"]
     if ahead_last is None:
         ahead_txt, ahead_cls = "—", ""
     elif ahead_last > 0:
@@ -666,10 +689,13 @@ def _team_block(team):
         _kpi("Runs/G (for/vs)", rpg),
     ])
     std_kpis_html = f'<div class="std-kpis">{kpis}</div>' if kpis else ""
+    wc_cell = (f'<div class="trend-cell stand-cell wc-cell">'
+               f'<div class="tc-title">Wild card race</div>{wc_html}</div>') if wc_html else ""
+    wc_col = " has-wc" if wc_cell else ""
 
     trends_html = f"""<div class="team-trends">
         <div class="team-h">Season trends</div>
-        <div class="trend-grid">
+        <div class="trend-grid{wc_col}">
           <div class="trend-cell">
             <div class="tc-title">Games ahead / behind</div>
             <div class="tc-val {ahead_cls}">{escape(ahead_txt)}</div>
@@ -682,6 +708,7 @@ def _team_block(team):
             {stand_html}
             {std_kpis_html}
           </div>
+          {wc_cell}
         </div>
       </div>"""
 
@@ -1211,6 +1238,8 @@ body {
 /* season trends */
 .team-trends { margin-bottom: 14px; }
 .trend-grid { display: grid; grid-template-columns: 1fr 0.95fr 1.35fr; gap: 12px; align-items: stretch; }
+.trend-grid.has-wc { grid-template-columns: 1fr 0.95fr 1.3fr 1.3fr; }
+@media (max-width: 1240px) { .trend-grid.has-wc { grid-template-columns: 1fr 1fr; } }
 @media (max-width: 860px) { .trend-grid { grid-template-columns: 1fr; } }
 .trend-cell { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: var(--card); text-align: center; display: flex; flex-direction: column; }
 .trend-cell.wide, .trend-cell.stand-cell { text-align: left; }
@@ -1229,6 +1258,16 @@ table.stand th:first-child { text-align: left; }
 table.stand td { text-align: right; padding: 4px 6px; border-bottom: 1px solid var(--line-soft); color: var(--ink-soft); }
 table.stand td:first-child { text-align: left; color: var(--ink); }
 table.stand tr.me td { background: #eef6ff; font-weight: 700; color: var(--ink); }
+/* wild card: the field is live-looking, the cutline is a hard rule under the
+   last qualifying spot, and everyone below it is dimmed as on the outside */
+table.stand.wc tr td { color: var(--ink-faint); }
+table.stand.wc tr td:first-child { color: var(--ink-soft); }
+table.stand.wc tr.in td { color: var(--ink-soft); }
+table.stand.wc tr.in td:first-child { color: var(--ink); font-weight: 600; }
+table.stand.wc tr.in td:last-child { color: var(--good); font-weight: 700; }
+table.stand.wc tr.cutline td { border-bottom: 2px solid var(--ink-faint); }
+table.stand.wc tr.me td { background: #eef6ff; color: var(--ink); font-weight: 700; }
+.wc-cell .tc-sub { margin-top: 6px; }
 /* attendance: compact lead + right-aligned last-5 list (tabular figures line up) */
 .tc-lead { font-size: 12px; color: var(--ink); font-weight: 600; margin: 2px 0 4px; }
 .att-last5 { margin-top: 10px; }

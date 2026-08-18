@@ -55,6 +55,9 @@ TEAMS = [
         "espn_abbr": "tex",
         "espn_id": "13",
         "division_name": "American League West",
+        "league_name": "American League",          # for the wild-card race
+        "mlb_team_id": 140,                        # MLB Stats API id (standings of record)
+        "wildcard_label": "AL Wild Card",
         "division_abbrs": ["TEX", "HOU", "SEA", "ATH", "LAA"],  # for standings-by-date reconstruction
         "attendance_espn_name": "Texas",   # how the team appears in ESPN's attendance table
         # Avg home attendance/game for completed seasons (immutable; source: ESPN).
@@ -295,7 +298,12 @@ def _parse_event(ev: dict, abbr: str) -> Optional[dict]:
     them = next((c for c in competitors if c is not us), None)
     if not us or not them:
         return None
-    state = ((comp.get("status") or {}).get("type") or {}).get("state")  # pre / in / post
+    status = (comp.get("status") or {}).get("type") or {}
+    state = status.get("state")            # pre / in / post
+    # "post" alone is not proof a game was played: postponed, canceled and
+    # suspended games all come back as post with 0-0 scores and no winner
+    # flag. Only `completed` games may move the W-L (and therefore the GB) math.
+    completed = bool(status.get("completed"))
     date_str, time_str = _fmt_game_datetime(ev.get("date", ""))
     home_away = us.get("homeAway")
     opp_name = (them.get("team") or {}).get("displayName") or (them.get("team") or {}).get("abbreviation") or "TBD"
@@ -312,9 +320,13 @@ def _parse_event(ev: dict, abbr: str) -> Optional[dict]:
     us_score, them_score = _score(us), _score(them)
     won = None
     result = None
-    if state == "post" and us_score is not None and them_score is not None:
-        won = bool(us.get("winner"))
-        wl = "W" if us.get("winner") else ("L" if them.get("winner") else "—")
+    if state == "post" and completed and us_score is not None and them_score is not None:
+        if us.get("winner"):
+            won, wl = True, "W"
+        elif them.get("winner"):
+            won, wl = False, "L"
+        else:
+            won, wl = None, "—"        # tie — a game played, but not a W or an L
         result = f"{wl} {int(us_score)}–{int(them_score)}"
 
     return {
@@ -393,7 +405,7 @@ def _fetch_broadcasts(sport_path: str, abbr: str, games: list[dict]) -> dict:
 
 
 def _fetch_schedule(sport_path: str, abbr: str, games: list[dict]) -> dict:
-    played = [g for g in games if g["state"] == "post"]
+    played = [g for g in games if g["state"] == "post" and g.get("result")]
     upcoming = [g for g in games if g["state"] == "pre"]
     nxt = upcoming[:3]
     tv = _fetch_broadcasts(sport_path, abbr, nxt)
@@ -420,6 +432,28 @@ def _winpct_series(games: list[dict]) -> list[dict]:
     return series
 
 
+def _gb_between(me: tuple[int, int], other: tuple[int, int]) -> float:
+    """Standard games-behind: how far (W, L) `me` trails (W, L) `other`.
+
+    GB = ((otherW − meW) + (meL − otherL)) / 2 — negative when `me` is ahead.
+    """
+    return ((other[0] - me[0]) + (me[1] - other[1])) / 2
+
+
+def _games_ahead(rows: list[tuple], me_abbr: str) -> Optional[float]:
+    """Signed games ahead(+)/behind(−) for `me_abbr` in a [(abbr, W, L)] table.
+
+    Measured off the leader, or off 2nd place when we *are* the leader — the
+    same reference point the GB column in a published standings table uses.
+    """
+    ranked = sorted(rows, key=lambda r: (-(r[1] / max(r[1] + r[2], 1)), -(r[1] - r[2])))
+    me = next((r for r in ranked if r[0] == me_abbr.upper()), None)
+    if me is None or len(ranked) < 2:
+        return None
+    ref = ranked[1] if ranked[0][0] == me_abbr.upper() else ranked[0]
+    return round(-_gb_between((me[1], me[2]), (ref[1], ref[2])), 1)
+
+
 def _games_ahead_series(sport_path: str, division_abbrs: list[str], team_abbr: str,
                         team_games: list[dict]) -> list[dict]:
     """Signed games ahead/behind in the division after each of the team's games.
@@ -427,10 +461,11 @@ def _games_ahead_series(sport_path: str, division_abbrs: list[str], team_abbr: s
     Positive = leading the division (margin over 2nd); negative = games behind
     the leader. Rebuilt from every division team's game log, standings-by-date.
     """
-    logs = {team_abbr.upper(): [(g["date_iso"], g["won"]) for g in team_games
-                                if g["state"] == "post" and g["won"] is not None]}
+    me_abbr = team_abbr.upper()
+    logs = {me_abbr: [(g["date_iso"], g["won"]) for g in team_games
+                      if g["state"] == "post" and g["won"] is not None]}
     for ab in division_abbrs:
-        if ab.upper() == team_abbr.upper():
+        if ab.upper() == me_abbr:
             continue
         games = _team_games(sport_path, ab.lower())
         logs[ab.upper()] = [(g["date_iso"], g["won"]) for g in games
@@ -445,22 +480,33 @@ def _games_ahead_series(sport_path: str, division_abbrs: list[str], team_abbr: s
         return W, L
 
     series = []
-    for date, _ in logs[team_abbr.upper()]:
-        standings = []
-        for ab in logs:
-            W, L = wl_asof(ab, date)
-            pct = W / max(W + L, 1)
-            standings.append((ab, W, L, pct))
-        standings.sort(key=lambda x: (-x[3], -x[1]))
-        me = next(s for s in standings if s[0] == team_abbr.upper())
-        if me[0] == standings[0][0]:                 # leading → ahead of 2nd
-            second = standings[1]
-            val = ((me[1] - second[1]) + (second[2] - me[2])) / 2
-        else:                                        # trailing → behind leader
-            lead = standings[0]
-            val = -((lead[1] - me[1]) + (me[2] - lead[2])) / 2
-        series.append({"d": date, "v": round(val, 1)})
+    for date, _ in logs[me_abbr]:
+        rows = [(ab, *wl_asof(ab, date)) for ab in logs]
+        val = _games_ahead(rows, me_abbr)
+        if val is not None:
+            series.append({"d": date, "v": val})
     return series
+
+
+def _current_games_ahead(table: list[dict]) -> Optional[float]:
+    """Today's signed games ahead/behind, straight off the live standings table.
+
+    The per-game series is reconstructed from schedules and can only be as
+    current as the team's last game; this pins the headline number (and the
+    chart's final point) to the same source as the standings block beside it,
+    so the two can never disagree.
+    """
+    rows, me_abbr = [], None
+    for r in table:
+        try:
+            W, L = int(r["wins"]), int(r["losses"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        ab = (r.get("abbr") or "").upper()
+        rows.append((ab, W, L))
+        if r.get("is_team"):
+            me_abbr = ab
+    return _games_ahead(rows, me_abbr) if me_abbr else None
 
 
 def _attendance_series(games: list[dict]) -> list[dict]:
@@ -577,43 +623,71 @@ def _walk_find_team(node, abbr):
     return None
 
 
+# The whole standings blob is read three times per build (division table,
+# wild-card race, opponent lookup). Memoise it briefly so one build makes one
+# request, while a later build — 30 minutes on — still refetches.
+_STANDINGS_TTL = 60.0
+_standings_cache: dict[str, tuple[float, Optional[dict]]] = {}
+
+
+def _standings_blob(sport_path: str) -> Optional[dict]:
+    league = sport_path.split("/")[-1]  # 'mlb'
+    hit = _standings_cache.get(league)
+    now = datetime.now(timezone.utc).timestamp()
+    if hit and now - hit[0] < _STANDINGS_TTL:
+        return hit[1]
+    d = _get(f"https://site.api.espn.com/apis/v2/sports/baseball/{league}/standings?level=3&season={_SEASON}")
+    _standings_cache[league] = (now, d)
+    return d
+
+
+def _stat(entry: dict, name: str) -> dict:
+    """One named stat dict out of a standings entry ({} when absent)."""
+    for st in (entry.get("stats") or []):
+        if st.get("name") == name:
+            return st
+    return {}
+
+
+def _group_entries(group: Optional[dict]) -> list:
+    """The team rows of a standings group, whichever shape ESPN used."""
+    if not group:
+        return []
+    return (group.get("standings") or {}).get("entries") or group.get("entries") or []
+
+
+def _find_group(root, name: str, *, with_entries: bool = True) -> Optional[dict]:
+    """DFS a standings blob for the group node called `name`."""
+    found = None
+
+    def walk(node):
+        nonlocal found
+        if found is not None:
+            return
+        if isinstance(node, dict):
+            if node.get("name") == name and (_group_entries(node) or not with_entries):
+                found = node
+                return
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    walk(root)
+    return found
+
+
 def _fetch_division_and_playoff(sport_path: str, division_name: str, abbr: str) -> dict:
     """AL West table (ordered) + ESPN model playoff % for our team."""
-    league = sport_path.split("/")[-1]  # 'mlb'
-    d = _get(f"https://site.api.espn.com/apis/v2/sports/baseball/{league}/standings?level=3&season={_SEASON}")
+    d = _standings_blob(sport_path)
     if not d:
         return {"table": [], "playoff_pct": None}
 
-    # Find the division group by name.
-    group = None
-
-    def _find_group(node):
-        nonlocal group
-        if group is not None:
-            return
-        if isinstance(node, dict):
-            if node.get("name") == division_name and (node.get("standings") or node.get("entries")):
-                group = node
-                return
-            for v in node.values():
-                _find_group(v)
-        elif isinstance(node, list):
-            for v in node:
-                _find_group(v)
-
-    _find_group(d)
-
-    def _stat(entry, name):
-        for s in (entry.get("stats") or []):
-            if s.get("name") == name:
-                return s
-        return {}
+    group = _find_group(d, division_name)
 
     table, playoff_pct, team_stats = [], None, {}
-    entries = []
-    if group:
-        entries = (group.get("standings") or {}).get("entries") or group.get("entries") or []
-    for e in entries:
+    for e in _group_entries(group):
         team = e.get("team") or {}
         row = {
             "name": team.get("displayName") or team.get("name"),
@@ -621,7 +695,7 @@ def _fetch_division_and_playoff(sport_path: str, division_name: str, abbr: str) 
             "wins": _stat(e, "wins").get("displayValue"),
             "losses": _stat(e, "losses").get("displayValue"),
             "pct": _stat(e, "winPercent").get("displayValue"),
-            "gb": _stat(e, "gamesBehind").get("displayValue"),
+            "gb": _dash(_stat(e, "gamesBehind").get("displayValue")),
             "is_team": team.get("abbreviation", "").upper() == abbr.upper(),
         }
         table.append(row)
@@ -643,6 +717,224 @@ def _fetch_division_and_playoff(sport_path: str, division_name: str, abbr: str) 
     # Order the table by wins desc so it reads like a real standings block.
     table.sort(key=lambda r: float(r["pct"] or 0), reverse=True)
     return {"table": table, "playoff_pct": playoff_pct, "team_stats": team_stats}
+
+
+# Three wild cards per league since the 2022 expansion.
+_WILDCARD_SPOTS = 3
+
+
+def _fmt_gb(gb: float) -> str:
+    """GB the way a standings table prints it: '—' level, '+2.0' up, '2.0' down."""
+    if gb == 0:
+        return "—"
+    return f"+{abs(gb):.1f}" if gb < 0 else f"{gb:.1f}"
+
+
+def _fetch_wildcard(sport_path: str, league_name: Optional[str], abbr: str,
+                    spots: int = _WILDCARD_SPOTS, limit: int = 7) -> dict:
+    """The league's wild-card race: everyone who isn't leading a division.
+
+    Division leaders are already in, so they come out of the pool; the rest are
+    ranked league-wide and every GB is measured off the team holding the last
+    wild card — which is how the race is actually published (teams in the field
+    show how far *ahead* of that cutline they sit, chasers how far behind).
+    """
+    d = _standings_blob(sport_path) if league_name else None
+    league = _find_group(d, league_name, with_entries=False) if d else None
+    if not league:
+        return {"table": [], "spots": spots}
+
+    def _row(entry):
+        team = entry.get("team") or {}
+        ab = (team.get("abbreviation") or "").upper()
+        try:
+            W = int(_stat(entry, "wins").get("displayValue"))
+            L = int(_stat(entry, "losses").get("displayValue"))
+        except (TypeError, ValueError):
+            return None
+        try:
+            seed = int(_stat(entry, "playoffSeed").get("displayValue") or 0)
+        except (TypeError, ValueError):
+            seed = 0
+        return {
+            "name": team.get("shortDisplayName") or team.get("displayName") or team.get("name"),
+            "abbr": ab, "wins": W, "losses": L, "seed": seed,
+            "pct": _stat(entry, "winPercent").get("displayValue"),
+            "is_team": ab == abbr.upper(),
+        }
+
+    # Each division contributes everyone but its leader — entries arrive in
+    # standings order, so the leader is simply the first one.
+    pool = []
+    for division in _child_groups(league):
+        rows = [r for r in (_row(e) for e in _group_entries(division)) if r]
+        pool.extend(rows[1:])
+    # ESPN's own playoff seeding already resolves head-to-head tiebreakers we
+    # can't recompute; only fall back to win% when the feed omits it.
+    if pool and all(r["seed"] for r in pool):
+        pool.sort(key=lambda r: r["seed"])
+    else:
+        pool.sort(key=_standings_key)
+    if len(pool) <= spots:
+        return {"table": [], "spots": spots}
+
+    cutline = pool[spots - 1]
+    for i, r in enumerate(pool):
+        gb = _gb_between((r["wins"], r["losses"]), (cutline["wins"], cutline["losses"]))
+        r["gb"] = _fmt_gb(gb)
+        r["in_field"] = i < spots
+
+    # Show the field plus the nearest chasers — and our own team wherever it is.
+    shown = pool[:limit]
+    if not any(r["is_team"] for r in shown):
+        mine = next((r for r in pool if r["is_team"]), None)
+        if mine:
+            shown = shown[:limit - 1] + [mine]
+    return {"table": shown, "spots": spots}
+
+
+def _standings_key(row: dict):
+    return (-(row["wins"] / max(row["wins"] + row["losses"], 1)),
+            -(row["wins"] - row["losses"]))
+
+
+def _child_groups(node: dict) -> list:
+    """The division groups under a league node, however deeply they're nested."""
+    kids = [c for c in (node.get("children") or []) if _group_entries(c)]
+    if kids:
+        return kids
+    out = []
+
+    def walk(n):
+        if isinstance(n, dict):
+            if n is not node and _group_entries(n):
+                out.append(n)
+                return
+            for v in n.values():
+                walk(v)
+        elif isinstance(n, list):
+            for v in n:
+                walk(v)
+
+    walk(node)
+    return out
+
+
+# ── Standings of record: MLB's own Stats API ──────────────────────────────
+# ESPN's standings feed stays the source for things only ESPN has (its model
+# playoff %, its rate stats), but every number that has to be *right* — W-L,
+# games back, and who holds a wild card — comes from MLB's free, no-auth Stats
+# API instead. It publishes gamesBack / wildCardGamesBack / wildCardRank
+# directly, so those figures are read from the league, never reconstructed.
+_STATSAPI = "https://statsapi.mlb.com/api/v1/standings"
+_MLB_LEAGUE_ID = {"American League": 103, "National League": 104}
+_MLB_TTL = 60.0
+_mlb_cache: dict[tuple, tuple[float, Optional[dict]]] = {}
+
+
+def _mlb_standings(league_id: int, kind: str = "regularSeason") -> Optional[dict]:
+    """One standings payload from MLB, memoised for the length of a build."""
+    key = (league_id, kind)
+    hit = _mlb_cache.get(key)
+    now = datetime.now(timezone.utc).timestamp()
+    if hit and now - hit[0] < _MLB_TTL:
+        return hit[1]
+    try:
+        r = requests.get(_STATSAPI, timeout=_HTTP_TIMEOUT, headers={"User-Agent": "venue-reception/1.0"},
+                         params={"leagueId": league_id, "season": _SEASON,
+                                 "standingsTypes": kind, "hydrate": "team,division"})
+        r.raise_for_status()
+        d = r.json()
+    except Exception as e:
+        logger.warning(f"teams: MLB standings ({league_id}/{kind}) failed: {e}")
+        d = None
+    _mlb_cache[key] = (now, d)
+    return d
+
+
+def _mlb_rows(payload: Optional[dict], division_name: Optional[str] = None) -> list[dict]:
+    """Flatten a standings payload into team rows, optionally one division only."""
+    rows = []
+    for rec in (payload or {}).get("records") or []:
+        if division_name and (rec.get("division") or {}).get("name") != division_name:
+            continue
+        for t in rec.get("teamRecords") or []:
+            team = t.get("team") or {}
+            try:
+                W, L = int(t["wins"]), int(t["losses"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            rows.append({
+                "id": team.get("id"),
+                "name": team.get("name"),
+                "short": team.get("teamName") or team.get("clubName") or team.get("name"),
+                "abbr": (team.get("abbreviation") or "").upper(),
+                "wins": W, "losses": L,
+                "pct": t.get("winningPercentage"),
+                "gb": _dash(t.get("gamesBack")),
+                "wc_gb": _dash(t.get("wildCardGamesBack")),
+                "wc_rank": t.get("wildCardRank"),
+                "div_rank": t.get("divisionRank"),
+                "div_leader": bool(t.get("divisionLeader")),
+            })
+    return rows
+
+
+def _dash(v) -> str:
+    """MLB writes a level/leading figure as '-'; print it as a real dash."""
+    return "—" if str(v).strip() in ("-", "", "None") else str(v)
+
+
+def _fetch_official_standings(cfg: dict, spots: int = _WILDCARD_SPOTS, limit: int = 7) -> dict:
+    """Division table, current games ahead/behind, and the wild-card race — all
+    straight from MLB. Returns empty pieces if the API is unreachable, and the
+    ESPN-derived versions stand in."""
+    league_id = _MLB_LEAGUE_ID.get(cfg.get("league_name") or "")
+    out = {"table": [], "games_ahead": None, "wildcard": [], "spots": spots}
+    if not league_id:
+        return out
+    me_id = cfg.get("mlb_team_id")
+
+    # ── division table, ordered as MLB ranks it ──
+    rows = _mlb_rows(_mlb_standings(league_id), cfg.get("division_name"))
+    rows.sort(key=lambda r: r["div_rank"] or 99)
+    out["table"] = [{
+        "name": r["name"], "abbr": r["abbr"],
+        "wins": str(r["wins"]), "losses": str(r["losses"]),
+        "pct": r["pct"], "gb": r["gb"], "is_team": r["id"] == me_id,
+    } for r in rows]
+
+    # ── how far ahead/behind we are right now ──
+    me = next((r for r in rows if r["id"] == me_id), None)
+    if me:
+        if me["div_leader"]:
+            # MLB publishes no "games ahead" for a leader — derive the margin
+            # over 2nd place from the same official records.
+            second = next((r for r in rows if not r["div_leader"]), None)
+            if second:
+                out["games_ahead"] = round(
+                    -_gb_between((me["wins"], me["losses"]), (second["wins"], second["losses"])), 1)
+        else:
+            try:
+                out["games_ahead"] = -abs(float(me["gb"]))
+            except ValueError:
+                out["games_ahead"] = 0.0          # '—' → level with the leader
+
+    # ── wild-card race: MLB's own wildCard standings, leaders already removed ──
+    wc = [r for r in _mlb_rows(_mlb_standings(league_id, "wildCard")) if r["wc_rank"]]
+    wc.sort(key=lambda r: int(r["wc_rank"]))
+    shown = wc[:limit]
+    if me_id and not any(r["id"] == me_id for r in shown):
+        mine = next((r for r in wc if r["id"] == me_id), None)
+        if mine:
+            shown = shown[:limit - 1] + [mine]
+    out["wildcard"] = [{
+        "name": r["short"], "abbr": r["abbr"],
+        "wins": str(r["wins"]), "losses": str(r["losses"]),
+        "pct": r["pct"], "gb": r["wc_gb"],
+        "in_field": int(r["wc_rank"]) <= spots, "is_team": r["id"] == me_id,
+    } for r in shown]
+    return out
 
 
 # Book preference — DraftKings first: it prices every market (incl. divisions),
@@ -740,17 +1032,13 @@ _ORDINAL = {1: "1st", 2: "2nd", 3: "3rd", 4: "4th", 5: "5th"}
 
 def _all_standings_lookup(sport_path: str) -> dict:
     """Map every team abbr → {record, div, rank} for opponent context."""
-    league = sport_path.split("/")[-1]
-    d = _get(f"https://site.api.espn.com/apis/v2/sports/baseball/{league}/standings?level=3&season={_SEASON}")
+    d = _standings_blob(sport_path)
     out = {}
     if not d:
         return out
 
-    def _stat(entry, name):
-        for s in (entry.get("stats") or []):
-            if s.get("name") == name:
-                return s.get("displayValue")
-        return None
+    def _val(entry, name):
+        return _stat(entry, name).get("displayValue")
 
     def walk(node):
         if isinstance(node, dict):
@@ -762,7 +1050,7 @@ def _all_standings_lookup(sport_path: str) -> dict:
                     ab = (e.get("team") or {}).get("abbreviation")
                     if ab:
                         out[ab] = {
-                            "record": f"{_stat(e, 'wins')}-{_stat(e, 'losses')}",
+                            "record": f"{_val(e, 'wins')}-{_val(e, 'losses')}",
                             "div": _DIV_SHORT.get(nm, nm),
                             "rank": _ORDINAL.get(i + 1, f"{i+1}th"),
                         }
@@ -850,6 +1138,15 @@ def _build_team(cfg: dict) -> dict:
     games = _team_games(cfg["sport_path"], cfg["espn_abbr"])
     schedule = _fetch_schedule(cfg["sport_path"], cfg["espn_abbr"], games)
     div = _fetch_division_and_playoff(cfg["sport_path"], cfg["division_name"], cfg["espn_abbr"])
+    # MLB is the authority on W-L, games back and the wild-card race; the
+    # ESPN-derived versions below only stand in if its API can't be reached.
+    official = _fetch_official_standings(cfg)
+    if official["table"]:
+        div["table"] = official["table"]
+    if official["wildcard"]:
+        wildcard = {"table": official["wildcard"], "spots": official["spots"]}
+    else:
+        wildcard = _fetch_wildcard(cfg["sport_path"], cfg.get("league_name"), cfg["espn_abbr"])
     futures = _fetch_futures(cfg)
     news = _fetch_news(cfg["sport_path"], cfg["name"], cfg["espn_id"])
 
@@ -857,6 +1154,18 @@ def _build_team(cfg: dict) -> dict:
     games_ahead = _games_ahead_series(
         cfg["sport_path"], cfg.get("division_abbrs") or [], cfg["espn_abbr"], games
     )
+    # The per-game reconstruction stops at the team's last game; the live
+    # standings table is the authority for where things stand right now.
+    current_ahead = official["games_ahead"]
+    if current_ahead is None:
+        current_ahead = _current_games_ahead(div["table"])
+    if current_ahead is not None:
+        today = datetime.now(_DISPLAY_TZ).date().isoformat()
+        if games_ahead and games_ahead[-1]["d"] >= today:
+            games_ahead[-1]["v"] = current_ahead
+        else:
+            games_ahead.append({"d": today, "v": current_ahead})
+
     attendance = _attendance_series(games)
     current_avg = round(sum(p["v"] for p in attendance) / len(attendance)) if attendance else None
     last5_home = attendance[-5:][::-1] if attendance else []   # most recent first
@@ -897,6 +1206,9 @@ def _build_team(cfg: dict) -> dict:
         "previous_games": schedule["previous"],
         "next_games": schedule["next"],
         "division_table": div["table"],
+        "wildcard_label": cfg.get("wildcard_label") or "Wild Card",
+        "wildcard_spots": wildcard["spots"],
+        "wildcard_table": wildcard["table"],
         "odds": {
             "playoff_pct": div["playoff_pct"],       # model probability, not a line
             "pennant": futures["pennant"],
@@ -911,6 +1223,7 @@ def _build_team(cfg: dict) -> dict:
             "playoff_pct": _pct_to_float(div["playoff_pct"]),
             "winpct": winpct,
             "games_ahead": games_ahead,
+            "games_ahead_now": current_ahead,
             "attendance_avg": current_avg,
             "attendance_by_year": attendance_by_year,
             "attendance_last5": last5_home,   # [{"d": iso, "v": count}] most-recent first
