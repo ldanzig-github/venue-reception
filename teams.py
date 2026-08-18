@@ -279,6 +279,21 @@ def _fetch_venue_events(cfg: dict, team_name: str, limit: int = 4) -> list[dict]
     return events[:limit]
 
 
+def _local_date(iso_utc: str) -> str:
+    """The game's calendar date where it was played (US Eastern).
+
+    ev["date"] is UTC, so an 8:05 PM ET first pitch is already tomorrow by that
+    clock. Anything a person reads — or anything dated the way MLB dates a game
+    — has to use the local date, or night games land a day late and collide
+    with the next afternoon's game.
+    """
+    try:
+        return (datetime.fromisoformat(iso_utc.replace("Z", "+00:00"))
+                .astimezone(_DISPLAY_TZ).date().isoformat())
+    except Exception:
+        return (iso_utc or "")[:10]
+
+
 def _fmt_game_datetime(iso_utc: str) -> tuple[str, str]:
     """(date, time) in US Eastern, e.g. ('Wed, Jul 29', '7:05 PM ET')."""
     if not iso_utc:
@@ -332,6 +347,7 @@ def _parse_event(ev: dict, abbr: str) -> Optional[dict]:
     return {
         "id": ev.get("id"),
         "date_iso": (ev.get("date") or "")[:10],   # UTC calendar date — stable join key
+        "date_local": _local_date(ev.get("date", "")),   # as played — for display and dating
         "state": state,
         "date": date_str,
         "time": time_str,
@@ -462,14 +478,15 @@ def _games_ahead_series(sport_path: str, division_abbrs: list[str], team_abbr: s
     the leader. Rebuilt from every division team's game log, standings-by-date.
     """
     me_abbr = team_abbr.upper()
-    logs = {me_abbr: [(g["date_iso"], g["won"]) for g in team_games
-                      if g["state"] == "post" and g["won"] is not None]}
+    def _log(gs):
+        return [(g.get("date_local") or g["date_iso"], g["won"]) for g in gs
+                if g["state"] == "post" and g["won"] is not None]
+
+    logs = {me_abbr: _log(team_games)}
     for ab in division_abbrs:
         if ab.upper() == me_abbr:
             continue
-        games = _team_games(sport_path, ab.lower())
-        logs[ab.upper()] = [(g["date_iso"], g["won"]) for g in games
-                            if g["state"] == "post" and g["won"] is not None]
+        logs[ab.upper()] = _log(_team_games(sport_path, ab.lower()))
 
     def wl_asof(ab, date):
         W = L = 0
@@ -511,7 +528,7 @@ def _current_games_ahead(table: list[dict]) -> Optional[float]:
 
 def _attendance_series(games: list[dict]) -> list[dict]:
     """Home-game attendance over the season (the team's own ballpark)."""
-    return [{"d": g["date_iso"], "v": int(g["attendance"])}
+    return [{"d": g.get("date_local") or g["date_iso"], "v": int(g["attendance"])}
             for g in games
             if g.get("home_away_raw") == "home" and g.get("attendance")]
 
