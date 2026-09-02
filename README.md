@@ -1,6 +1,6 @@
 # Venue Reception Dashboard
 
-Standalone live dashboard tracking Google Maps + Tripadvisor reception for **Poolhouse London, Ballers Philadelphia, Ballers Boston Seaport, Five Iron Golf Dubai**. Headless Playwright scrapes every 30 minutes; Flask serves a self-contained HTML page with a 5-minute auto-reload.
+Standalone live dashboard tracking Google Maps + Tripadvisor reception for **Poolhouse London, Ballers Philadelphia, Ballers Boston Seaport, Five Iron Golf Dubai, Zimmi's, Noury**. Headless Playwright scrapes every 30 minutes; Flask serves a self-contained HTML page with a 5-minute auto-reload.
 
 No external services, no API keys. Runs on any Linux box with Python 3.10+.
 

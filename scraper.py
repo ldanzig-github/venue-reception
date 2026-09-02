@@ -112,6 +112,16 @@ VENUE_TARGETS = [
      "places_query": "Five Iron Golf Westin Mina Seyahi Dubai Marina"},
     {"key": "dubai_trip",     "type": "tripadvisor",
      "url": "https://www.tripadvisor.com/Attraction_Review-g295424-d33368076-Reviews-Five_Iron_Golf-Dubai_Emirate_of_Dubai.html"},
+    {"key": "zimmis_trip",    "type": "tripadvisor",
+     "url": "https://www.tripadvisor.com/Restaurant_Review-g60763-d32716986-Reviews-Zimmi_s-New_York_City_New_York.html"},
+    {"key": "zimmis",         "type": "google",
+     "url": "https://www.google.com/maps/search/Zimmis+72+Bedford+Street+New+York",
+     "search_q":     "Zimmi's 72 Bedford Street West Village New York",
+     "places_query": "Zimmi's 72 Bedford St New York NY 10014"},
+    {"key": "noury",          "type": "google",
+     "url": "https://www.google.com/maps/search/Noury+137+Sullivan+Street+New+York",
+     "search_q":     "Noury 137 Sullivan Street SoHo New York",
+     "places_query": "Noury 137 Sullivan St New York NY 10012"},
 ]
 
 
@@ -124,6 +134,25 @@ VENUE_TARGETS = [
 TRIP_FALLBACKS = {
     "poolhouse_trip": {"rating": "5.0", "count": "4", "ranking": "#290 of 1,007"},
     "dubai_trip": {"rating": "5.0", "count": "377", "ranking": "#1 of 474"},
+    "zimmis_trip": {"rating": "4.3", "count": "4", "ranking": "#4,410 of 13,696"},
+}
+
+
+# ─── Yelp values ─────────────────────────────────────────────────────────
+# Yelp blocks datacenter IPs the same way Tripadvisor does (403 on every
+# request from the VPS), so there is no live path. Fill in a venue's rating
+# and count by hand to make its Yelp pill appear; leave it out to hide it.
+YELP_RATINGS = {
+    # "zimmis": {"rating": "?", "count": "43"},
+    # "noury":  {"rating": "?", "count": "4"},
+}
+
+
+# ─── Editorial scores ────────────────────────────────────────────────────
+# Critic scores on their own scale (not review averages) — rendered as a chip
+# on the venue card, never mixed into the star pills. Verified by hand.
+EDITORIAL = {
+    "noury": {"name": "The Infatuation", "score": "7.8", "scale": "10"},
 }
 
 
@@ -588,6 +617,9 @@ def _build_dashboard_data(scrape: dict) -> dict:
     boston_g = scrape.get("boston") or {}
     dubai_g = scrape.get("dubai") or {}
     dubai_t = scrape.get("dubai_trip") or {}
+    zimmis_g = scrape.get("zimmis") or {}
+    zimmis_t = scrape.get("zimmis_trip") or {}
+    noury_g = scrape.get("noury") or {}
 
     def gdist(d):
         if not d: return [0, 0, 0, 0, 0]
@@ -618,6 +650,8 @@ def _build_dashboard_data(scrape: dict) -> dict:
     philly_reviews = merge(philly_g)
     boston_reviews = merge(boston_g)
     dubai_reviews = merge(dubai_g)
+    zimmis_reviews = merge(zimmis_g)
+    noury_reviews = merge(noury_g)
 
     return {
         "last_scrape": datetime.now().strftime("%b %-d, %Y · %-I:%M %p"),
@@ -653,6 +687,27 @@ def _build_dashboard_data(scrape: dict) -> dict:
                 "reviews": dubai_reviews,
                 "analytics": _venue_analytics(dubai_reviews),
                 "insight": f"{dubai_t.get('ranking','?')} in Dubai · {dubai_g.get('count','?')} Google reviews",
+            },
+            "zimmis": {
+                "google": {"rating": zimmis_g.get("rating"), "count": zimmis_g.get("count")},
+                "trip": {"rating": zimmis_t.get("rating"), "count": zimmis_t.get("count"), "rank": zimmis_t.get("ranking")},
+                # Zimmi's has moved reservations to its own site, so the
+                # OpenTable score is a frozen history, not a live signal.
+                "opentable": {"rating": "5.0", "count": "346"},
+                "yelp": YELP_RATINGS.get("zimmis", {}),
+                "distribution": gdist(zimmis_g),
+                "reviews": zimmis_reviews,
+                "analytics": _venue_analytics(zimmis_reviews),
+                "insight": f"{zimmis_g.get('count','?')} Google reviews · OT 5.0★ (346, pre-move) · West Village French bistro",
+            },
+            "noury": {
+                "google": {"rating": noury_g.get("rating"), "count": noury_g.get("count")},
+                "yelp": YELP_RATINGS.get("noury", {}),
+                "editorial": EDITORIAL.get("noury", {}),
+                "distribution": gdist(noury_g),
+                "reviews": noury_reviews,
+                "analytics": _venue_analytics(noury_reviews),
+                "insight": f"{noury_g.get('count','?')} Google reviews · Infatuation 7.8/10 · SoHo izakaya, still building its review base",
             },
         },
     }
