@@ -45,23 +45,12 @@ VENUE_META = [
         "ot_url": None,
     },
     {
-        "key": "zimmis",
-        "name": "Zimmi's",
-        "addr": "72 Bedford St, West Village · French restaurant · Opened Dec 2024 · 21 mo live",
-        "google_url": "https://www.google.com/maps/search/Zimmis+72+Bedford+Street+New+York",
-        "trip_url":   "https://www.tripadvisor.com/Restaurant_Review-g60763-d32716986-Reviews-Zimmi_s-New_York_City_New_York.html",
-        "ot_url": "https://www.opentable.com/r/zimmis-new-york",
-        "yelp_url": "https://www.yelp.com/biz/zimmis-new-york",
-    },
-    {
-        "key": "noury",
-        "name": "Noury",
-        "addr": "137 Sullivan St, SoHo · Izakaya · Opened Jun 2026 · 3 mo live",
-        "google_url": "https://www.google.com/maps/search/Noury+137+Sullivan+Street+New+York",
+        "key": "dubai_bb",
+        "name": "Five Iron Golf Business Bay",
+        "addr": "Damac Towers by Paramount, Tower A · Indoor golf · Opened May 2026 · 4 mo live",
+        "google_url": "https://www.google.com/maps/search/Five+Iron+Golf+Business+Bay+Damac+Towers+Dubai",
         "trip_url": None,
         "ot_url": None,
-        "yelp_url": "https://www.yelp.com/biz/noury-new-york",
-        "editorial_url": "https://www.theinfatuation.com/new-york/reviews/noury",
     },
 ]
 
@@ -293,8 +282,6 @@ def _venue_block(meta, data):
     g = data.get("google") or {}
     t = data.get("trip") or {}
     o = data.get("opentable") or {}
-    y = data.get("yelp") or {}
-    ed = data.get("editorial") or {}
     analytics = data.get("analytics") or {}
     reviews = (data.get("reviews") or [])[:4]
     while len(reviews) < 4:
@@ -315,8 +302,6 @@ def _venue_block(meta, data):
         pills.append(_score_pill("t", "T", t, meta["trip_url"], extra=t.get("rank","")))
     if o.get("rating") and meta.get("ot_url"):
         pills.append(_score_pill("o", "OT", o, meta["ot_url"]))
-    if y.get("rating") and meta.get("yelp_url"):
-        pills.append(_score_pill("y", "Y", y, meta["yelp_url"]))
 
     # Distribution must represent the LIFETIME breakdown (sum should match the
     # total review count). If it doesn't, hide the panel — recent-sample
@@ -346,13 +331,6 @@ def _venue_block(meta, data):
         chips.append(f'<span class="chip {cls}"><b>{pos}%</b> positive · last {analytics["sample_size"]}</span>')
     if t.get("rank"):
         chips.append(f'<span class="chip">{escape(str(t["rank"]))} on Tripadvisor</span>')
-    # Critic scores live on their own scale — a chip, never a star pill.
-    if ed.get("score"):
-        ed_txt = f'<b>{escape(str(ed["score"]))}</b>/{escape(str(ed.get("scale", "10")))} on {escape(str(ed.get("name", "critics")))}'
-        chips.append(
-            f'<a class="chip" href="{escape(meta["editorial_url"])}" target="_blank">{ed_txt}</a>'
-            if meta.get("editorial_url") else f'<span class="chip">{ed_txt}</span>'
-        )
 
     cards_html = "\n      ".join(_review_card(r, default_url=meta["google_url"]) for r in reviews)
 
@@ -1162,7 +1140,6 @@ body {
 .scoreP.g .src { background: #e8f0fe; color: #1d4ed8; border-color: #bfdbfe; }
 .scoreP.t .src { background: #d8f3e8; color: #047857; border-color: #a7f3d0; }
 .scoreP.o .src { background: #fce8ea; color: #9b1c1c; border-color: #fecaca; }
-.scoreP.y .src { background: #fef3c7; color: #b45309; border-color: #fde68a; }
 .scoreP.ios .src { background: #f1f5f9; color: #0f172a; border-color: #e2e8f0; }
 .scoreP.android .src { background: #ecfdf5; color: #047857; border-color: #a7f3d0; }
 .scoreP .num { font-weight: 700; font-size: 12.5px; }
@@ -1209,8 +1186,6 @@ body {
   line-height: 1.3;
 }
 .chip b { color: var(--ink); font-weight: 700; }
-a.chip { text-decoration: none; }
-a.chip:hover { background: #fff; border-color: var(--line); }
 .chip.good { background: #ecfdf5; border-color: #a7f3d0; color: #065f46; }
 .chip.warn { background: #fef3c7; border-color: #fde68a; color: #92400e; }
 .chip.bad  { background: #fef2f2; border-color: #fecaca; color: #991b1b; }
